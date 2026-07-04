@@ -84,7 +84,7 @@ internal sealed class AttributionEngine
             return false;
         }
 
-        if (source.Contains("poison") || source.Contains("doom"))
+        if (source.Contains("poison") || source.Contains("doom") || source.Contains("potion"))
         {
             return true;
         }
@@ -97,6 +97,7 @@ internal sealed class AttributionEngine
         return !hasCardSource
             && (sourceType.Equals("power", StringComparison.OrdinalIgnoreCase)
                 || sourceType.Equals("orb", StringComparison.OrdinalIgnoreCase)
+                || sourceType.Equals("potion", StringComparison.OrdinalIgnoreCase)
                 || sourceType.Equals("relic", StringComparison.OrdinalIgnoreCase));
     }
 
@@ -191,22 +192,44 @@ internal sealed class AttributionEngine
             return false;
         }
 
-        var amount = IndirectDamageAmount(ev);
         var kind = IndirectDamageKind(ev);
         if (kind.Equals("poison", StringComparison.OrdinalIgnoreCase) && IsPoisonDamageSource(ev))
         {
-            SplitPoisonDamageAndDecay(ledger, amount, apply);
+            var amount = IndirectDamageAmount(ev);
+            return SplitPoisonDamageAndDecay(ledger, amount, apply);
         }
         else if (kind.Equals("doom", StringComparison.OrdinalIgnoreCase) && IsDoomDamageSource(ev))
         {
-            SplitStatusDamage(ledger, amount, "doom", IsDoomStatus, apply);
+            if (!Bool(ev.Metadata, "target_killed"))
+            {
+                return false;
+            }
+
+            var amount = DoomKillCreditAmount(ev);
+            return SplitStatusDamageAndClear(ledger, amount, "doom", IsDoomStatus, apply);
         }
         else
         {
-            SplitUtilityDamage(ledger, amount, kind, apply);
+            var amount = IndirectDamageAmount(ev);
+            return SplitUtilityDamage(ledger.Where(entry => !IsDoomStatus(entry.Status)), amount, kind, apply);
+        }
+    }
+
+    public bool ClearPendingDoomDamageSource(LogEvent ev)
+    {
+        if (!IsDoomDamageSource(ev) || !Bool(ev.Metadata, "target_killed"))
+        {
+            return false;
         }
 
-        return amount > 0;
+        var targetKey = TargetKey(ev);
+        if (string.IsNullOrWhiteSpace(targetKey) || !_indirectDamageByTarget.TryGetValue(targetKey, out var ledger))
+        {
+            return false;
+        }
+
+        ledger.RemoveAll(entry => IsDoomStatus(entry.Status));
+        return true;
     }
 
     public void ApplyDamageAssist(LogEvent ev, double amount, Action<ActorRef, double> apply)
@@ -214,9 +237,11 @@ internal sealed class AttributionEngine
         if (TryApplyExplicitAmplification(ev, apply))
         {
             var explicitTargetKey = TargetKey(ev);
-            if (!string.IsNullOrWhiteSpace(explicitTargetKey) && _vulnerableByTarget.TryGetValue(explicitTargetKey, out var explicitLedger))
+            if (ev.Turn.HasValue
+                && !string.IsNullOrWhiteSpace(explicitTargetKey)
+                && _vulnerableByTarget.TryGetValue(explicitTargetKey, out var explicitLedger))
             {
-                ConsumeOldestTimedUse(explicitLedger, IsDamageAmplifierStatus);
+                AdvanceTimedLedger(explicitLedger, ev.Turn, IsDamageAmplifierStatus);
             }
 
             return;
@@ -232,7 +257,7 @@ internal sealed class AttributionEngine
         var bonus = Math.Max(0, amount - estimatedBase);
         if (bonus > 0)
         {
-            ApplyAndConsumeOldestTimedUse(ledger, bonus, IsDamageAmplifierStatus, apply);
+            ApplyTimedCredit(ledger, bonus, ev.Turn, IsDamageAmplifierStatus, apply);
         }
     }
 
@@ -415,27 +440,29 @@ internal sealed class AttributionEngine
         entries.Add(new UtilitySetup(actor.PlayerId, actor.PlayerName, status, stacks, appliedTurn));
     }
 
-    private static void SplitUtilityDamage(IEnumerable<UtilitySetup> ledger, double amount, Action<ActorRef, double> apply)
+    private static bool SplitUtilityDamage(IEnumerable<UtilitySetup> ledger, double amount, Action<ActorRef, double> apply)
     {
-        SplitUtilityDamage(ledger, amount, "", (actor, credit, _) => apply(actor, credit));
+        return SplitUtilityDamage(ledger, amount, "", (actor, credit, _) => apply(actor, credit));
     }
 
-    private static void SplitUtilityDamage(IEnumerable<UtilitySetup> ledger, double amount, string kind, Action<ActorRef, double, string> apply)
+    private static bool SplitUtilityDamage(IEnumerable<UtilitySetup> ledger, double amount, string kind, Action<ActorRef, double, string> apply)
     {
         var entries = ledger.Where(entry => entry.Stacks > 0).ToArray();
         var total = entries.Sum(entry => entry.Stacks);
         if (amount <= 0 || total <= 0)
         {
-            return;
+            return false;
         }
 
         foreach (var entry in entries)
         {
             apply(new ActorRef(entry.PlayerId, entry.PlayerName), amount * entry.Stacks / total, kind);
         }
+
+        return true;
     }
 
-    private static void SplitPoisonDamageAndDecay(List<UtilitySetup> ledger, double amount, Action<ActorRef, double, string> apply)
+    private static bool SplitPoisonDamageAndDecay(List<UtilitySetup> ledger, double amount, Action<ActorRef, double, string> apply)
     {
         var entries = ledger
             .Select((entry, index) => new { Entry = entry, Index = index })
@@ -445,7 +472,7 @@ internal sealed class AttributionEngine
         if (amount <= 0 || total <= 0)
         {
             ledger.RemoveAll(entry => entry.Stacks <= 0);
-            return;
+            return false;
         }
 
         foreach (var row in entries)
@@ -471,6 +498,8 @@ internal sealed class AttributionEngine
                 ledger[i] = entry with { Stacks = remainingStacks };
             }
         }
+
+        return true;
     }
 
     private static void SplitStatusDamage(List<UtilitySetup> ledger, double amount, string kind, Func<string, bool> statusPredicate, Action<ActorRef, double, string> apply)
@@ -486,6 +515,15 @@ internal sealed class AttributionEngine
         {
             apply(new ActorRef(entry.PlayerId, entry.PlayerName), amount * entry.Stacks / total, kind);
         }
+    }
+
+    private static bool SplitStatusDamageAndClear(List<UtilitySetup> ledger, double amount, string kind, Func<string, bool> statusPredicate, Action<ActorRef, double, string> apply)
+    {
+        var total = ledger.Where(entry => entry.Stacks > 0 && statusPredicate(entry.Status)).Sum(entry => entry.Stacks);
+        var credited = total > 0 && amount > 0;
+        SplitStatusDamage(ledger, Math.Min(amount, total), kind, statusPredicate, apply);
+        ledger.RemoveAll(entry => statusPredicate(entry.Status));
+        return credited;
     }
 
     private static void ApplyTimedCredit(List<UtilitySetup> ledger, double amount, int? currentTurn, Func<string, bool> statusPredicate, Action<ActorRef, double> apply)
@@ -770,6 +808,29 @@ internal sealed class AttributionEngine
             Math.Max(Number(ev.Metadata, "original_damage"), Number(ev.Metadata, "lethal_damage")));
     }
 
+    private static double DoomKillCreditAmount(LogEvent ev)
+    {
+        var overkill = Number(ev.Metadata, "overkill_damage");
+        var total = Number(ev.Metadata, "total_damage");
+        var unblocked = Number(ev.Metadata, "unblocked_damage");
+        var lethal = Number(ev.Metadata, "lethal_damage");
+        var amount = ev.Amount ?? 0;
+        var candidates = new[]
+        {
+            total - overkill,
+            unblocked - overkill,
+            amount - overkill,
+            Number(ev.Metadata, "current_hp"),
+            Number(ev.Metadata, "target_current_hp"),
+            unblocked,
+            total,
+            lethal,
+            amount
+        }.Where(value => value > 0).ToArray();
+
+        return candidates.Length == 0 ? 0 : candidates.Min();
+    }
+
     private static string SourceText(LogEvent ev)
     {
         return $"{ev.SourceType} {ev.SourceName} {Text(ev.Metadata, "power")} {Text(ev.Metadata, "status")} {Text(ev.Metadata, "damage_source_type")} {Text(ev.Metadata, "damage_source_name")} {Text(ev.Metadata, "damage_source_power")} {Text(ev.Metadata, "card_id")} {Text(ev.Metadata, "card_name")} {Text(ev.Metadata, "observed_card")} {Text(ev.Metadata, "observed_power")}".ToLowerInvariant();
@@ -801,6 +862,8 @@ internal sealed class AttributionEngine
                      Text(ev.Metadata, "damage_source_name"),
                      Text(ev.Metadata, "damage_source_id"),
                      Text(ev.Metadata, "damage_source_power"),
+                     Text(ev.Metadata, "potion_name"),
+                     Text(ev.Metadata, "potion_id"),
                      Text(ev.Metadata, "card_name"),
                      Text(ev.Metadata, "card_id"),
                      Text(ev.Metadata, "observed_card"),

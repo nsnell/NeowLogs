@@ -1425,6 +1425,10 @@ public static class EventTap
         {
             return "doom";
         }
+        if (text.Contains("potion"))
+        {
+            return "potion";
+        }
         if (LooksLikeOrb(source))
         {
             return "orb";

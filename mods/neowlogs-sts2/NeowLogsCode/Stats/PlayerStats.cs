@@ -9,6 +9,8 @@ public sealed class PlayerStats
     public double DirectDamage { get; set; }
     public double DamageAssist { get; set; }
     public double PoisonDamage { get; set; }
+    public double DoomDamage { get; set; }
+    public double PotionDamage { get; set; }
     public double CompanionDamage { get; set; }
     public double UtilityDamage { get; set; }
     public double Block { get; set; }
@@ -28,7 +30,7 @@ public sealed class PlayerStats
     public Dictionary<string, int> Statuses { get; } = new();
 
     public double DamageContribution => Damage + DamageAssist;
-    public double DamageBarTotal => DirectDamage + DamageAssist + PoisonDamage + CompanionDamage;
+    public double DamageBarTotal => DirectDamage + DamageAssist + PoisonDamage + DoomDamage + PotionDamage + CompanionDamage;
     public double BlockContribution => Block + PreventedDamage + CompanionBlock;
     public double UtilityScore => DamageAssist + PreventedDamage;
 

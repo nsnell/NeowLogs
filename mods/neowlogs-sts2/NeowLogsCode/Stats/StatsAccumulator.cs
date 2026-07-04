@@ -9,6 +9,11 @@ public sealed class StatsAccumulator
         "vulnerable", "debilitate", "weak", "frail", "lock_on", "mark", "doom", "strength", "strength_down", "artifact_strip"
     };
 
+    private static readonly HashSet<string> CharacterDisplayNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Ironclad", "Silent", "Defect", "Watcher", "Necrobinder"
+    };
+
     private readonly Dictionary<string, PlayerStats> _players = new();
     private readonly AttributionEngine _attribution = new();
     private string? _currentCombatId;
@@ -48,6 +53,8 @@ public sealed class StatsAccumulator
                 DirectDamage = player.DirectDamage,
                 DamageAssist = player.DamageAssist,
                 PoisonDamage = player.PoisonDamage,
+                DoomDamage = player.DoomDamage,
+                PotionDamage = player.PotionDamage,
                 CompanionDamage = player.CompanionDamage,
                 UtilityDamage = player.UtilityDamage,
                 Block = player.Block,
@@ -142,6 +149,12 @@ public sealed class StatsAccumulator
                 ConsumePowerApplied(ev);
                 break;
             case "potion_used":
+                if (TryGetActor(ev, out actor))
+                {
+                    actor.UtilityEvents += 1;
+                    _attribution.TrackOwnedSource(ev, new AttributionEngine.ActorRef(actor.Id, actor.Name), PotionSourceName(ev));
+                }
+                break;
             case "relic_triggered":
                 if (TryGetActor(ev, out actor))
                 {
@@ -162,6 +175,11 @@ public sealed class StatsAccumulator
         }
 
         _attribution.ObserveCanonicalDamage(ev);
+        if (_attribution.TryApplyIndirectDamage(ev, ApplyIndirectDamage))
+        {
+            return;
+        }
+
         if (TryGetActor(ev, out var actor))
         {
             RecordDamage(actor, ev);
@@ -192,6 +210,11 @@ public sealed class StatsAccumulator
             return;
         }
 
+        if (_attribution.TryApplyIndirectDamage(ev, ApplyIndirectDamage))
+        {
+            return;
+        }
+
         if (TryGetActor(ev, out var actor))
         {
             _attribution.ObserveCanonicalDamage(ev);
@@ -202,11 +225,6 @@ public sealed class StatsAccumulator
         if (_attribution.TryResolveSourceOwner(ev, out var owner))
         {
             RecordDamage(GetPlayer(owner.PlayerId, owner.PlayerName), ev);
-            return;
-        }
-
-        if (_attribution.TryApplyIndirectDamage(ev, ApplyIndirectDamage))
-        {
             return;
         }
 
@@ -289,8 +307,13 @@ public sealed class StatsAccumulator
         switch (bucket)
         {
             case "poison":
-            case "doom":
                 actor.PoisonDamage += amount;
+                break;
+            case "doom":
+                actor.DoomDamage += amount;
+                break;
+            case "potion":
+                actor.PotionDamage += amount;
                 break;
             case "companion":
                 actor.CompanionDamage += amount;
@@ -306,6 +329,8 @@ public sealed class StatsAccumulator
             helper.DamageAssist += credit;
             helper.UtilityDamage += credit;
         });
+
+        _attribution.ClearPendingDoomDamageSource(ev);
     }
 
     private void ApplyIndirectDamage(AttributionEngine.ActorRef player, double credit, string kind)
@@ -315,6 +340,14 @@ public sealed class StatsAccumulator
         if (kind.Equals("companion", StringComparison.OrdinalIgnoreCase))
         {
             helper.CompanionDamage += credit;
+        }
+        else if (kind.Equals("doom", StringComparison.OrdinalIgnoreCase))
+        {
+            helper.DoomDamage += credit;
+        }
+        else if (kind.Equals("potion", StringComparison.OrdinalIgnoreCase))
+        {
+            helper.PotionDamage += credit;
         }
         else
         {
@@ -442,6 +475,8 @@ public sealed class StatsAccumulator
             DirectDamage = player.DirectDamage,
             DamageAssist = player.DamageAssist,
             PoisonDamage = player.PoisonDamage,
+            DoomDamage = player.DoomDamage,
+            PotionDamage = player.PotionDamage,
             CompanionDamage = player.CompanionDamage,
             UtilityDamage = player.UtilityDamage,
             Block = player.Block,
@@ -474,7 +509,9 @@ public sealed class StatsAccumulator
             || text.StartsWith("System.", StringComparison.Ordinal)
             || text.StartsWith("PlayerId ", StringComparison.OrdinalIgnoreCase)
             || text.StartsWith("<", StringComparison.Ordinal)
-            || text.Contains("#", StringComparison.Ordinal))
+            || text.Contains("#", StringComparison.Ordinal)
+            || text.EndsWith("Icon", StringComparison.OrdinalIgnoreCase)
+            || CharacterDisplayNames.Contains(text))
         {
             return false;
         }
@@ -493,7 +530,12 @@ public sealed class StatsAccumulator
         var source = $"{ev.SourceType} {ev.SourceName} {Text(ev.Metadata, "power")} {Text(ev.Metadata, "status")} {Text(ev.Metadata, "damage_source_type")} {Text(ev.Metadata, "damage_source_name")} {Text(ev.Metadata, "damage_source_power")} {Text(ev.Metadata, "observed_power")}".ToLowerInvariant();
         if (source.Contains("poison") || source.Contains("doom"))
         {
-            return "poison";
+            return source.Contains("doom") ? "doom" : "poison";
+        }
+
+        if (source.Contains("potion"))
+        {
+            return "potion";
         }
 
         if (source.Contains("otsy") || source.Contains("pet") || source.Contains("companion"))
@@ -502,5 +544,24 @@ public sealed class StatsAccumulator
         }
 
         return "direct";
+    }
+
+    private static string PotionSourceName(LogEvent ev)
+    {
+        foreach (var value in new[]
+                 {
+                     Text(ev.Metadata, "potion_name"),
+                     Text(ev.Metadata, "potion_id"),
+                     Text(ev.Metadata, "source_name"),
+                     ev.SourceName
+                 })
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return "potion";
     }
 }

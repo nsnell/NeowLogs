@@ -508,10 +508,9 @@ public static class UiRuntime
         };
         row.AddChild(editor);
 
-        row.AddChild(MakeReusableStackedBar());
-
         var value = MakeLabel("", 54, HorizontalAlignment.Right, new Color(0.96f, 0.97f, 1, 1));
         value.Name = "Value";
+        row.AddChild(MakeReusableStackedBar(value));
         row.AddChild(value);
         return row;
     }
@@ -651,6 +650,16 @@ public static class UiRuntime
         return _mode == MeterMode.Damage ? player.PoisonDamage : 0;
     }
 
+    private static double DoomValueForMode(PlayerStats player)
+    {
+        return _mode == MeterMode.Damage ? player.DoomDamage : 0;
+    }
+
+    private static double PotionValueForMode(PlayerStats player)
+    {
+        return _mode == MeterMode.Damage ? player.PotionDamage : 0;
+    }
+
     private static double CompanionValueForMode(PlayerStats player)
     {
         return _mode switch
@@ -687,14 +696,16 @@ public static class UiRuntime
         var primary = PrimaryValueForMode(player);
         var assist = AssistValueForMode(player);
         var poison = PoisonValueForMode(player);
+        var doom = DoomValueForMode(player);
+        var potion = PotionValueForMode(player);
         var companion = CompanionValueForMode(player);
-        var widths = SegmentWidths(totalWidth, max, primary, assist, poison, companion);
+        var widths = SegmentWidths(totalWidth, max, primary, assist, poison, doom, potion, companion);
 
         var frame = new PanelContainer
         {
             CustomMinimumSize = new Vector2(totalWidth, 14),
             SizeFlagsVertical = Control.SizeFlags.ShrinkCenter,
-            TooltipText = TotalTooltipForMode(primary, assist, poison, companion)
+            TooltipText = TotalTooltipForMode(primary, assist, poison, doom, potion, companion)
         };
         frame.AddThemeStyleboxOverride("panel", MakeBarBackground());
 
@@ -703,13 +714,15 @@ public static class UiRuntime
         frame.AddChild(stack);
 
         AddBarSegment(stack, widths[0], PlayerColor(player), PrimaryTooltipForMode(primary));
-        AddBarSegment(stack, widths[1], new Color(0.65f, 0.9f, 1f, 1), AssistTooltipForMode(assist));
+        AddBarSegment(stack, widths[1], new Color(0.96f, 0.78f, 0.35f, 1), AssistTooltipForMode(assist));
         AddBarSegment(stack, widths[2], new Color(0.55f, 0.9f, 0.42f, 1), PoisonTooltipForMode(poison));
-        AddBarSegment(stack, widths[3], new Color(0.92f, 0.68f, 1f, 1), CompanionTooltipForMode(companion));
+        AddBarSegment(stack, widths[3], new Color(0.74f, 0.48f, 1f, 1), DoomTooltipForMode(doom));
+        AddBarSegment(stack, widths[4], new Color(1f, 0.56f, 0.44f, 1), PotionTooltipForMode(potion));
+        AddBarSegment(stack, widths[5], new Color(0.92f, 0.68f, 1f, 1), CompanionTooltipForMode(companion));
         return frame;
     }
 
-    private static PanelContainer MakeReusableStackedBar()
+    private static PanelContainer MakeReusableStackedBar(Label valueLabel)
     {
         var frame = new PanelContainer
         {
@@ -723,13 +736,17 @@ public static class UiRuntime
         stack.AddThemeConstantOverride("separation", 0);
         frame.AddChild(stack);
 
-        var primary = MakeBarSegment("Primary", new Color(1, 1, 1, 1));
-        var assist = MakeBarSegment("Assist", new Color(0.65f, 0.9f, 1f, 1));
-        var poison = MakeBarSegment("PoisonDoom", new Color(0.55f, 0.9f, 0.42f, 1));
-        var companion = MakeBarSegment("Companion", new Color(0.92f, 0.68f, 1f, 1));
+        var primary = MakeBarSegment("Primary", new Color(1, 1, 1, 1), valueLabel);
+        var assist = MakeBarSegment("Assist", new Color(0.96f, 0.78f, 0.35f, 1), valueLabel);
+        var poison = MakeBarSegment("Poison", new Color(0.55f, 0.9f, 0.42f, 1), valueLabel);
+        var doom = MakeBarSegment("Doom", new Color(0.74f, 0.48f, 1f, 1), valueLabel);
+        var potion = MakeBarSegment("Potion", new Color(1f, 0.56f, 0.44f, 1), valueLabel);
+        var companion = MakeBarSegment("Companion", new Color(0.92f, 0.68f, 1f, 1), valueLabel);
         stack.AddChild(primary);
         stack.AddChild(assist);
         stack.AddChild(poison);
+        stack.AddChild(doom);
+        stack.AddChild(potion);
         stack.AddChild(companion);
         return frame;
     }
@@ -745,14 +762,19 @@ public static class UiRuntime
         var primary = PrimaryValueForMode(player);
         var assist = AssistValueForMode(player);
         var poison = PoisonValueForMode(player);
+        var doom = DoomValueForMode(player);
+        var potion = PotionValueForMode(player);
         var companion = CompanionValueForMode(player);
-        var widths = SegmentWidths(totalWidth, max, primary, assist, poison, companion);
+        var widths = SegmentWidths(totalWidth, max, primary, assist, poison, doom, potion, companion);
 
-        frame.TooltipText = TotalTooltipForMode(primary, assist, poison, companion);
+        frame.SetMeta("total_value_text", $"{ValueForMode(player):0}");
+        frame.TooltipText = TotalTooltipForMode(primary, assist, poison, doom, potion, companion);
         UpdateBarSegment(stack.GetNodeOrNull<PanelContainer>("Primary"), widths[0], PlayerColor(player), PrimaryTooltipForMode(primary));
-        UpdateBarSegment(stack.GetNodeOrNull<PanelContainer>("Assist"), widths[1], new Color(0.65f, 0.9f, 1f, 1), AssistTooltipForMode(assist));
-        UpdateBarSegment(stack.GetNodeOrNull<PanelContainer>("PoisonDoom"), widths[2], new Color(0.55f, 0.9f, 0.42f, 1), PoisonTooltipForMode(poison));
-        UpdateBarSegment(stack.GetNodeOrNull<PanelContainer>("Companion"), widths[3], new Color(0.92f, 0.68f, 1f, 1), CompanionTooltipForMode(companion));
+        UpdateBarSegment(stack.GetNodeOrNull<PanelContainer>("Assist"), widths[1], new Color(0.96f, 0.78f, 0.35f, 1), AssistTooltipForMode(assist));
+        UpdateBarSegment(stack.GetNodeOrNull<PanelContainer>("Poison"), widths[2], new Color(0.55f, 0.9f, 0.42f, 1), PoisonTooltipForMode(poison));
+        UpdateBarSegment(stack.GetNodeOrNull<PanelContainer>("Doom"), widths[3], new Color(0.74f, 0.48f, 1f, 1), DoomTooltipForMode(doom));
+        UpdateBarSegment(stack.GetNodeOrNull<PanelContainer>("Potion"), widths[4], new Color(1f, 0.56f, 0.44f, 1), PotionTooltipForMode(potion));
+        UpdateBarSegment(stack.GetNodeOrNull<PanelContainer>("Companion"), widths[5], new Color(0.92f, 0.68f, 1f, 1), CompanionTooltipForMode(companion));
     }
 
     private static void AddBarSegment(HBoxContainer stack, int width, Color color, string tooltip)
@@ -779,7 +801,7 @@ public static class UiRuntime
         stack.AddChild(segment);
     }
 
-    private static PanelContainer MakeBarSegment(string name, Color color)
+    private static PanelContainer MakeBarSegment(string name, Color color, Label valueLabel)
     {
         var segment = new PanelContainer
         {
@@ -796,6 +818,8 @@ public static class UiRuntime
             CornerRadiusBottomLeft = 2,
             CornerRadiusBottomRight = 2
         });
+        segment.MouseEntered += () => ApplyBarHoverValue(segment, valueLabel);
+        segment.MouseExited += () => RestoreBarHoverValue(segment, valueLabel);
         return segment;
     }
 
@@ -809,6 +833,8 @@ public static class UiRuntime
         segment.Visible = width > 0;
         segment.CustomMinimumSize = new Vector2(Math.Max(0, width), 14);
         segment.TooltipText = tooltip;
+        var separator = tooltip.LastIndexOf(" - ", StringComparison.Ordinal);
+        segment.SetMeta("hover_value_text", width > 0 && separator >= 0 ? tooltip[(separator + 3)..] : "");
         segment.AddThemeStyleboxOverride("panel", new StyleBoxFlat
         {
             BgColor = color,
@@ -817,6 +843,27 @@ public static class UiRuntime
             CornerRadiusBottomLeft = 2,
             CornerRadiusBottomRight = 2
         });
+    }
+
+    private static void ApplyBarHoverValue(PanelContainer segment, Label valueLabel)
+    {
+        var hoverText = segment.HasMeta("hover_value_text") ? segment.GetMeta("hover_value_text").ToString() : "";
+        if (!string.IsNullOrWhiteSpace(hoverText))
+        {
+            valueLabel.Text = hoverText;
+        }
+    }
+
+    private static void RestoreBarHoverValue(PanelContainer segment, Label valueLabel)
+    {
+        if (segment.GetParent()?.GetParent() is PanelContainer frame)
+        {
+            var totalText = frame.HasMeta("total_value_text") ? frame.GetMeta("total_value_text").ToString() : "";
+            if (!string.IsNullOrWhiteSpace(totalText))
+            {
+                valueLabel.Text = totalText;
+            }
+        }
     }
 
     private static int[] SegmentWidths(int totalWidth, double max, params double[] values)
@@ -855,17 +902,17 @@ public static class UiRuntime
     {
         return _mode switch
         {
-            MeterMode.Damage => $"Utility Damage - {value:0}",
+            MeterMode.Damage => $"Vuln Damage - {value:0}",
             MeterMode.Block => $"Utility Defense - {value:0}",
             _ => $"Utility - {value:0}"
         };
     }
 
-    private static string TotalTooltipForMode(double primary, double assist, double poison = 0, double companion = 0)
+    private static string TotalTooltipForMode(double primary, double assist, double poison = 0, double doom = 0, double potion = 0, double companion = 0)
     {
         return _mode switch
         {
-            MeterMode.Damage => $"Total Damage - {primary + assist + poison + companion:0}",
+            MeterMode.Damage => $"Total Damage - {primary + assist + poison + doom + potion + companion:0}",
             MeterMode.Block => $"Total Defense - {primary + assist + companion:0}",
             _ => $"Total - {primary + assist:0}"
         };
@@ -873,7 +920,17 @@ public static class UiRuntime
 
     private static string PoisonTooltipForMode(double value)
     {
-        return _mode == MeterMode.Damage ? $"Poison/Doom Damage - {value:0}" : "";
+        return _mode == MeterMode.Damage ? $"Poison Damage - {value:0}" : "";
+    }
+
+    private static string DoomTooltipForMode(double value)
+    {
+        return _mode == MeterMode.Damage ? $"Doom Damage - {value:0}" : "";
+    }
+
+    private static string PotionTooltipForMode(double value)
+    {
+        return _mode == MeterMode.Damage ? $"Potion Damage - {value:0}" : "";
     }
 
     private static string CompanionTooltipForMode(double value)

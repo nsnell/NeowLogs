@@ -101,7 +101,10 @@
     .bar-main { background: linear-gradient(90deg, var(--blue), var(--green)); }
     .bar-assist { background: var(--gold); }
     .bar-poison { background: #7ee06b; }
+    .bar-doom { background: #b07cff; }
+    .bar-potion { background: #ff8f70; }
     .bar-companion { background: #d7a0ff; }
+    .bar-seg { cursor: help; }
     .board td:nth-child(2) { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
     .section { margin-top: 14px; }
     .note { margin-top: 10px; color: var(--muted); font-size: 12px; }
@@ -191,7 +194,7 @@
       return meta(event, "target_side") === "Enemy";
     }
     function blankStats(displayName = "Unknown") {
-      return { displayName, damage: 0, direct: 0, damageAssist: 0, poisonDamage: 0, companionDamage: 0, block: 0, companionBlock: 0, damageBlocked: 0, preventedDamage: 0, utilityScore: 0, utilityDamage: 0, taken: 0, healing: 0, cards: 0, attacks: 0, skills: 0, powers: 0, energy: 0, utilityEvents: 0, statuses: {}, sources: {} };
+      return { displayName, damage: 0, direct: 0, damageAssist: 0, poisonDamage: 0, doomDamage: 0, potionDamage: 0, companionDamage: 0, block: 0, companionBlock: 0, damageBlocked: 0, preventedDamage: 0, utilityScore: 0, utilityDamage: 0, taken: 0, healing: 0, cards: 0, attacks: 0, skills: 0, powers: 0, energy: 0, utilityEvents: 0, statuses: {}, sources: {} };
     }
     function ensure(map, key, displayName) {
       const name = key || "Unknown";
@@ -213,7 +216,9 @@
       const kind = String(meta(event, "indirect_damage_kind") || "").toLowerCase();
       if (kind) return kind;
       const text = `${event.source_type || ""} ${event.source_name || ""} ${meta(event, "power") || ""} ${meta(event, "status") || ""} ${meta(event, "damage_source_type") || ""} ${meta(event, "damage_source_name") || ""} ${meta(event, "damage_source_power") || ""} ${meta(event, "observed_power") || ""}`.toLowerCase();
-      if (text.includes("poison") || text.includes("doom")) return "poison";
+      if (text.includes("doom")) return "doom";
+      if (text.includes("poison")) return "poison";
+      if (text.includes("potion")) return "potion";
       if (text.includes("otsy") || text.includes("pet") || text.includes("companion")) return "companion";
       return "direct";
     }
@@ -298,6 +303,24 @@
         num(meta(event, "lethal_damage"))
       );
     }
+    function doomKillCreditAmount(event) {
+      const overkill = num(meta(event, "overkill_damage"));
+      const total = num(meta(event, "total_damage"));
+      const unblocked = num(meta(event, "unblocked_damage"));
+      const amount = num(event.amount);
+      const candidates = [
+        total - overkill,
+        unblocked - overkill,
+        amount - overkill,
+        num(meta(event, "current_hp")),
+        num(meta(event, "target_current_hp")),
+        unblocked,
+        total,
+        num(meta(event, "lethal_damage")),
+        amount
+      ].filter(value => value > 0);
+      return candidates.length ? Math.min(...candidates) : 0;
+    }
     function indirectDamageKind(event) {
       const text = `${event.source_type || ""} ${event.source_name || ""} ${meta(event, "indirect_damage_kind") || ""} ${meta(event, "power") || ""} ${meta(event, "status") || ""} ${meta(event, "damage_source_type") || ""} ${meta(event, "damage_source_name") || ""} ${meta(event, "companion_name") || ""}`.toLowerCase();
       if (text.includes("otsy") || text.includes("pet") || text.includes("companion")) return "companion";
@@ -314,10 +337,10 @@
       if (source.includes("omnislice")) return true;
       const hasCardSource = Boolean(meta(event, "card_id") || meta(event, "card_name"));
       if (hasCardSource) return false;
-      if (source.includes("poison") || source.includes("doom")) return true;
+      if (source.includes("poison") || source.includes("doom") || source.includes("potion")) return true;
       if (isGenericUnownedEnemyDamage(event)) return true;
       const sourceType = String(event.source_type || "").toLowerCase();
-      return ["power", "orb", "relic"].includes(sourceType);
+      return ["power", "orb", "potion", "relic"].includes(sourceType);
     }
     function isDefectOrbDamage(event) {
       const actor = `${meta(event, "actor_model_id") || ""} ${event.actor_name || ""} ${meta(event, "actor_display_name") || ""}`.toLowerCase();
@@ -340,10 +363,14 @@
       const text = String(value || "").trim();
       return !text
         || text === "Unknown"
+        || isCharacterDisplayName(text)
         || /^player:\d+$/i.test(text)
         || /^\d+$/.test(text)
         || /^PlayerId\s+\d+$/i.test(text)
         || isIconName(text);
+    }
+    function isCharacterDisplayName(value) {
+      return /^(Ironclad|Silent|Defect|Watcher|Necrobinder)$/i.test(String(value || "").trim());
     }
     function sourceName(event) {
       if (truthy(meta(event, "inferred_card_source")) && meta(event, "card_name")) return String(meta(event, "card_name"));
@@ -379,6 +406,8 @@
         meta(event, "damage_source_name"),
         meta(event, "damage_source_id"),
         meta(event, "damage_source_power"),
+        meta(event, "potion_name"),
+        meta(event, "potion_id"),
         meta(event, "card_name"),
         meta(event, "card_id"),
         meta(event, "observed_card"),
@@ -539,7 +568,7 @@
       return true;
     }
     function splitVulnerableCredit(ledgerMap, targetKey, amount, currentTurn, apply) {
-      return splitTimedCredit(ledgerMap, targetKey, amount, null, isDamageAmplifierStatus, apply);
+      return splitTimedCredit(ledgerMap, targetKey, amount, currentTurn, isDamageAmplifierStatus, apply);
     }
     function splitPoisonDamageAndDecay(ledgerMap, targetKey, amount, apply) {
       const ledger = ledgerMap[targetKey] || [];
@@ -562,6 +591,13 @@
       if (amount <= 0 || total <= 0) return false;
       for (const row of rows) apply(row.player, amount * num(row.stacks) / total);
       return true;
+    }
+    function splitStatusDamageAndClear(ledgerMap, targetKey, amount, predicate, apply) {
+      const ledger = ledgerMap[targetKey] || [];
+      const total = ledger.filter(row => row && num(row.stacks) > 0 && predicate(row.status)).reduce((sum, row) => sum + num(row.stacks), 0);
+      const credited = splitStatusDamage(ledger, Math.min(amount, total), predicate, apply);
+      ledgerMap[targetKey] = ledger.filter(row => !predicate(row.status));
+      return credited;
     }
     function cleanEntityText(value) {
       return String(value || "")
@@ -680,21 +716,23 @@
           if (sourceSetup && !isIndirectDamageSource(event)) {
             actor = sourceSetup.player;
           } else if (setup && (isIndirectDamageSource(event) || isGenericUnownedEnemyDamage(event))) {
-            const creditedAmount = indirectDamageAmount(event);
+            const creditedAmount = isDoomDamageSource(event) ? doomKillCreditAmount(event) : indirectDamageAmount(event);
             const splitIndirect = isPoisonDamageSource(event)
               ? (handler) => splitPoisonDamageAndDecay(indirectDamageByTarget, targetKey, creditedAmount, handler)
               : isDoomDamageSource(event)
-                ? (handler) => splitStatusDamage(setup, creditedAmount, isDoomStatus, handler)
-              : (handler) => splitCredit(setup, creditedAmount, handler);
+                ? (handler) => truthy(meta(event, "target_killed")) && splitStatusDamageAndClear(indirectDamageByTarget, targetKey, creditedAmount, isDoomStatus, handler)
+              : (handler) => splitCredit((Array.isArray(setup) ? setup : [setup]).filter(row => !isDoomStatus(row.status)), creditedAmount, handler);
+            const indirectBucket = indirectDamageKind(event);
             splitIndirect((player, credit) => {
               const s = ensure(players, player.key, player.name);
               s.damage += credit;
-              const bucket = indirectDamageKind(event);
-              if (bucket === "companion") s.companionDamage += credit;
+              if (indirectBucket === "companion") s.companionDamage += credit;
+              else if (indirectBucket === "doom") s.doomDamage += credit;
+              else if (indirectBucket === "potion") s.potionDamage += credit;
               else s.poisonDamage += credit;
               addCounter(s.sources, source, credit);
             });
-            timeline.push({ actorKey: "poison-ledger", actor: "Poison/Doom ledger", type, source, target: event.target_name || "", amount: creditedAmount, time: event.timestamp_ms });
+            timeline.push({ actorKey: `${indirectBucket}-ledger`, actor: `${indirectBucket[0].toUpperCase()}${indirectBucket.slice(1)} ledger`, type, source, target: event.target_name || "", amount: creditedAmount, time: event.timestamp_ms });
             continue;
           } else {
             if (sourceSetup) {
@@ -704,6 +742,20 @@
               if (!procOwner) continue;
               actor = procOwner;
             }
+          }
+        } else if (countsAsDamage) {
+          const targetKey = event.target_id || event.target_name;
+          const setup = indirectDamageByTarget[targetKey];
+          if (targetKey && setup && isDoomDamageSource(event) && truthy(meta(event, "target_killed"))) {
+            const creditedAmount = doomKillCreditAmount(event);
+            splitStatusDamageAndClear(indirectDamageByTarget, targetKey, creditedAmount, isDoomStatus, (player, credit) => {
+              const helper = ensure(players, player.key, player.name);
+              helper.damage += credit;
+              helper.doomDamage += credit;
+              addCounter(helper.sources, "Doom", credit);
+            });
+            timeline.push({ actorKey: "doom-ledger", actor: "Doom ledger", type, source, target: event.target_name || "", amount: creditedAmount, time: event.timestamp_ms });
+            continue;
           }
         }
 
@@ -715,7 +767,9 @@
           const bonus = Math.max(0, amount - base);
           const bucket = damageBucket(event);
           stats.damage += amount;
-          if (bucket === "poison" || bucket === "doom") stats.poisonDamage += amount;
+          if (bucket === "doom") stats.doomDamage += amount;
+          else if (bucket === "potion") stats.potionDamage += amount;
+          else if (bucket === "poison") stats.poisonDamage += amount;
           else if (bucket === "companion") stats.companionDamage += amount;
           else stats.direct += Math.max(0, amount - bonus);
           addCounter(stats.sources, source, amount);
@@ -729,6 +783,9 @@
                 helper.utilityDamage += credit;
               });
             }
+          }
+          if (targetKey && isDoomDamageSource(event) && truthy(meta(event, "target_killed"))) {
+            indirectDamageByTarget[targetKey] = (indirectDamageByTarget[targetKey] || []).filter(row => !isDoomStatus(row.status));
           }
         } else if (type === "block_gained" || type === "block") {
           stats.block += amount;
@@ -796,7 +853,12 @@
           stats.utilityEvents += 1;
         } else if (type === "energy_gained") {
           stats.utilityEvents += 1;
-        } else if (["potion_used", "relic_triggered", "utility"].includes(type)) {
+        } else if (type === "potion_used") {
+          stats.utilityEvents += 1;
+          for (const key of sourceOwnerKeys(event)) {
+            sourceOwnerByName[key] = { player: actor, status: source || "potion", stacks: amount || 1 };
+          }
+        } else if (["relic_triggered", "utility"].includes(type)) {
           stats.utilityEvents += 1;
         }
 
@@ -811,10 +873,13 @@
         .map(([playerKey, stats]) => ({
           key: playerKey,
           name: playerAliases[playerKey] || stats.displayName || playerKey,
-          primary: metric === "block" ? stats.block : (stats.direct || stats.poisonDamage || stats.companionDamage ? stats.direct : stats.damage),
+          primary: metric === "block" ? stats.block : (stats.direct || stats.poisonDamage || stats.doomDamage || stats.potionDamage || stats.companionDamage ? stats.direct : stats.damage),
           assist: metric === "block" ? stats.preventedDamage : stats.damageAssist,
           poison: metric === "block" ? 0 : stats.poisonDamage,
+          doom: metric === "block" ? 0 : stats.doomDamage,
+          potion: metric === "block" ? 0 : stats.potionDamage,
           companion: metric === "block" ? stats.companionBlock : stats.companionDamage,
+          metric,
           value: metric === "block" ? blockContribution(stats) : damageContribution(stats)
         }))
         .sort((a, b) => b.value - a.value);
@@ -824,22 +889,47 @@
       const primary = typeof row === "number" ? row : row.primary;
       const assist = typeof row === "number" ? 0 : row.assist;
       const poison = typeof row === "number" ? 0 : row.poison;
+      const doom = typeof row === "number" ? 0 : row.doom;
+      const potion = typeof row === "number" ? 0 : row.potion;
       const companion = typeof row === "number" ? 0 : row.companion;
       const width = max <= 0 ? 0 : Math.max(4, Math.round(value / max * 100));
       const primaryWidth = value <= 0 ? 0 : Math.round(primary / value * width);
       const assistWidth = value <= 0 ? 0 : Math.round(assist / value * width);
       const poisonWidth = value <= 0 ? 0 : Math.round(poison / value * width);
-      const companionWidth = Math.max(0, width - primaryWidth - assistWidth - poisonWidth);
-      const companionLabel = poison > 0 ? "Otsy Damage" : "Otsy Block";
-      return `<span class="bar"><span class="bar-main" style="width:${primaryWidth}%" title="Direct ${Math.round(primary)}"></span><span class="bar-assist" style="width:${assistWidth}%" title="Utility ${Math.round(assist)}"></span><span class="bar-poison" style="width:${poisonWidth}%" title="Poison/Doom ${Math.round(poison)}"></span><span class="bar-companion" style="width:${companionWidth}%" title="${companionLabel} ${Math.round(companion)}"></span></span>`;
+      const doomWidth = value <= 0 ? 0 : Math.round(doom / value * width);
+      const potionWidth = value <= 0 ? 0 : Math.round(potion / value * width);
+      const companionWidth = Math.max(0, width - primaryWidth - assistWidth - poisonWidth - doomWidth - potionWidth);
+      const companionLabel = row.metric === "block" ? "Otsy Block" : "Otsy Damage";
+      return `<span class="bar" data-total="${Math.round(value)}"><span class="bar-seg bar-main" data-value="${Math.round(primary)}" style="width:${primaryWidth}%" title="Direct Damage ${Math.round(primary)}"></span><span class="bar-seg bar-assist" data-value="${Math.round(assist)}" style="width:${assistWidth}%" title="Vuln Damage ${Math.round(assist)}"></span><span class="bar-seg bar-poison" data-value="${Math.round(poison)}" style="width:${poisonWidth}%" title="Poison Damage ${Math.round(poison)}"></span><span class="bar-seg bar-doom" data-value="${Math.round(doom)}" style="width:${doomWidth}%" title="Doom Damage ${Math.round(doom)}"></span><span class="bar-seg bar-potion" data-value="${Math.round(potion)}" style="width:${potionWidth}%" title="Potion Damage ${Math.round(potion)}"></span><span class="bar-seg bar-companion" data-value="${Math.round(companion)}" style="width:${companionWidth}%" title="${companionLabel} ${Math.round(companion)}"></span></span>`;
     }
     function board(title, rows) {
       const top = rows.slice(0, 5);
       const max = Math.max(0, ...top.map(row => row.value));
       const body = top.length
-        ? top.map((row, i) => `<tr><td class="rank">${i + 1}</td><td>${esc(row.name)}</td><td>${bar(row, max)}</td><td class="num">${Math.round(row.value)}</td></tr>`).join("")
+        ? top.map((row, i) => `<tr><td class="rank">${i + 1}</td><td>${esc(row.name)}</td><td>${bar(row, max)}</td><td class="num bar-value" data-total="${Math.round(row.value)}">${Math.round(row.value)}</td></tr>`).join("")
         : `<tr><td colspan="4" class="muted">No data yet</td></tr>`;
       return `<section class="panel board"><h2>${esc(title)}</h2><table>${body}</table></section>`;
+    }
+    const barHoverScript = `
+      document.addEventListener("mouseover", event => {
+        const segment = event.target.closest(".bar-seg");
+        if (!segment) return;
+        const row = segment.closest("tr");
+        const value = row && row.querySelector(".bar-value");
+        if (value) value.textContent = segment.dataset.value || "0";
+      });
+      document.addEventListener("mouseout", event => {
+        const segment = event.target.closest(".bar-seg");
+        if (!segment) return;
+        const row = segment.closest("tr");
+        const value = row && row.querySelector(".bar-value");
+        if (value) value.textContent = value.dataset.total || "0";
+      });
+    `;
+    function installBarHover() {
+      if (document.body.dataset.barHoverInstalled) return;
+      document.body.dataset.barHoverInstalled = "true";
+      new Function(barHoverScript)();
     }
     function topSource(stats) {
       const row = Object.entries(stats.sources).sort((a, b) => b[1] - a[1])[0];
@@ -863,8 +953,8 @@
       }).filter(playerKey => !isCompanionName(playerKey) && !isCompanionName(players[playerKey].displayName)).map(playerKey => {
         const s = players[playerKey];
         const shownName = displayPlayerName(playerKey, s.displayName);
-        return `<tr><td class="player"><input class="name-input" data-player="${esc(playerKey)}" value="${esc(shownName)}"></td><td class="num">${Math.round(damageContribution(s))}</td><td class="num">${Math.round(s.damage)}</td><td class="num">${Math.round(s.damageAssist)}</td><td class="num">${Math.round(s.poisonDamage)}</td><td class="num">${Math.round(s.companionDamage)}</td><td class="num">${Math.round(blockContribution(s))}</td><td class="num">${Math.round(s.block)}</td><td class="num">${Math.round(s.preventedDamage)}</td><td class="num">${Math.round(s.companionBlock)}</td><td class="num">${Math.round(s.taken)}</td><td class="num">${s.cards}</td><td class="num">${s.attacks}/${s.skills}/${s.powers}</td><td>${topSource(s)}</td></tr>`;
-      }).join("") || `<tr><td colspan="14" class="muted">No player combat events found.</td></tr>`;
+        return `<tr><td class="player"><input class="name-input" data-player="${esc(playerKey)}" value="${esc(shownName)}"></td><td class="num">${Math.round(damageContribution(s))}</td><td class="num">${Math.round(s.damage)}</td><td class="num">${Math.round(s.damageAssist)}</td><td class="num">${Math.round(s.poisonDamage)}</td><td class="num">${Math.round(s.doomDamage)}</td><td class="num">${Math.round(s.potionDamage)}</td><td class="num">${Math.round(s.companionDamage)}</td><td class="num">${Math.round(blockContribution(s))}</td><td class="num">${Math.round(s.block)}</td><td class="num">${Math.round(s.preventedDamage)}</td><td class="num">${Math.round(s.companionBlock)}</td><td class="num">${Math.round(s.taken)}</td><td class="num">${s.cards}</td><td class="num">${s.attacks}/${s.skills}/${s.powers}</td><td>${topSource(s)}</td></tr>`;
+      }).join("") || `<tr><td colspan="16" class="muted">No player combat events found.</td></tr>`;
 
       const enemyRows = Object.entries(analysis.enemyDamage).sort((a, b) => b[1] - a[1]).slice(0, 8)
         .map(([name, value]) => `<tr><td>${esc(name)}</td><td class="num">${Math.round(value)}</td></tr>`).join("")
@@ -892,8 +982,8 @@
         </section>
         <section class="panel section">
           <h2>Player Breakdown</h2>
-          <table><thead><tr><th>Player</th><th class="num">Damage Total</th><th class="num">Raw Dmg</th><th class="num">Dmg Assist</th><th class="num">Poison/Doom</th><th class="num">Otsy Dmg</th><th class="num">Block Total</th><th class="num">Block</th><th class="num">Prevented</th><th class="num">Otsy Block</th><th class="num">Taken</th><th class="num">Cards</th><th class="num">Atk/Skill/Power</th><th>Top Source</th></tr></thead><tbody>${playerRows}</tbody></table>
-          <div class="note">Damage Total = raw damage + damage utility. Damage bars split direct, utility, poison/Doom, and Otsy/companion damage. Block Total = direct block + prevented damage + damage absorbed by Otsy.</div>
+          <table><thead><tr><th>Player</th><th class="num">Damage Total</th><th class="num">Raw Dmg</th><th class="num">Vuln Dmg</th><th class="num">Poison</th><th class="num">Doom</th><th class="num">Potion</th><th class="num">Otsy Dmg</th><th class="num">Block Total</th><th class="num">Block</th><th class="num">Prevented</th><th class="num">Otsy Block</th><th class="num">Taken</th><th class="num">Cards</th><th class="num">Atk/Skill/Power</th><th>Top Source</th></tr></thead><tbody>${playerRows}</tbody></table>
+          <div class="note">Damage Total = raw damage + vuln damage. Damage bars split direct, vuln, poison, Doom, potion, and Otsy/companion damage. Block Total = direct block + prevented damage + damage absorbed by Otsy.</div>
         </section>
         <section class="grid two">
           <section class="panel"><h2>Enemy Damage Captured</h2><table><thead><tr><th>Creature</th><th class="num">Damage</th></tr></thead><tbody>${enemyRows}</tbody></table></section>
@@ -913,6 +1003,7 @@
           }
         });
       });
+      installBarHover();
       document.getElementById("exportButton").disabled = false;
     }
     async function loadFile(file) {
@@ -925,7 +1016,7 @@
     });
     document.getElementById("sampleButton").addEventListener("click", () => render(analyze(sampleEvents.map(normalize))));
     document.getElementById("exportButton").addEventListener("click", () => {
-      const html = `<!doctype html><html><head><meta charset="utf-8"><title>NeowLogs Report</title>${document.querySelector("style").outerHTML}</head><body><header><div><h1>NeowLogs</h1><p class="muted">Exported local report</p></div></header><main>${latestReport}</main></body></html>`;
+      const html = `<!doctype html><html><head><meta charset="utf-8"><title>NeowLogs Report</title>${document.querySelector("style").outerHTML}</head><body><header><div><h1>NeowLogs</h1><p class="muted">Exported local report</p></div></header><main>${latestReport}</main><script>${barHoverScript.replace(/<\/script/gi, "<\\\\/script")}<\/script></body></html>`;
       const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
       const link = Object.assign(document.createElement("a"), { href: url, download: "neowlogs-report.html" });
       link.click();

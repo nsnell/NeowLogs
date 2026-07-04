@@ -79,6 +79,12 @@ public sealed class PlayerStatsCheckpoint
     [JsonPropertyName("poison_damage")]
     public double PoisonDamage { get; set; }
 
+    [JsonPropertyName("doom_damage")]
+    public double DoomDamage { get; set; }
+
+    [JsonPropertyName("potion_damage")]
+    public double PotionDamage { get; set; }
+
     [JsonPropertyName("companion_damage")]
     public double CompanionDamage { get; set; }
 
