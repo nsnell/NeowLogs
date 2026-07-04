@@ -13,7 +13,11 @@ public static class RuntimePatchRegistry
         new("block_gained", ["MegaCrit.Sts2.Core.Combat.History.CombatHistory"], ["BlockGained"]),
         new("card_played", ["MegaCrit.Sts2.Core.Combat.History.CombatHistory"], ["CardPlayStarted"]),
         new("debuff_applied", ["MegaCrit.Sts2.Core.Commands.PowerCmd", "MegaCrit.Sts2.Core.Commands.ApplyPowerCommand", "MegaCrit.Sts2.Commands.PowerCmd", "MegaCrit.Sts2.Commands.ApplyPowerCommand"], ["Execute", "Run", "Process", "Apply"]),
-        new("healing_done", ["MegaCrit.Sts2.Core.Commands.CreatureCmd"], ["Heal"])
+        new("healing_done", ["MegaCrit.Sts2.Core.Commands.CreatureCmd"], ["Heal"]),
+        // Fix 1b: turn-boundary hook so timed ledgers expire on transitions, not only on hits.
+        new("turn_started", ["MegaCrit.Sts2.Core.Combat.History.CombatHistory"], ["TurnStarted", "PlayerTurnStarted", "RoundStarted", "PlayerTurnBegan"]),
+        // Fix 4.1a: death hook so doom/poison lethal blows are captured even when they deal 0 damage.
+        new("creature_died", ["MegaCrit.Sts2.Core.Combat.History.CombatHistory"], ["CreatureDied", "CreatureKilled", "Died", "OnCreatureDied", "CreatureDefeated"])
     ];
 
     public static void Install(Harmony harmony)

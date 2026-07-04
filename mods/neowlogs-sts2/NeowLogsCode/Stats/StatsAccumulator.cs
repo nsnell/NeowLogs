@@ -161,10 +161,44 @@ public sealed class StatsAccumulator
                     actor.UtilityEvents += 1;
                 }
                 break;
+            case "turn_started":
+                var startedTurn = ev.Turn ?? (int)(ev.Amount ?? 0);
+                if (startedTurn > 0)
+                {
+                    _attribution.AdvanceTurn(startedTurn);
+                }
+                break;
+            case "creature_died":
+                ConsumeCreatureDied(ev);
+                break;
             case "player_renamed":
                 RenamePlayer(Text(ev.Metadata, "player_id"), Text(ev.Metadata, "display_name"));
                 break;
         }
+    }
+
+    public IReadOnlyList<(string PlayerId, string PlayerName, string Status, double Bonus)> ResolveAmplifiers(string? targetKey, int? turn, double bonus)
+    {
+        return _attribution.ResolveAmplifiers(targetKey, turn, bonus);
+    }
+
+    public IReadOnlyList<(string PlayerId, string PlayerName, double DoomApplied, double Credit)> ResolveDoomCredit(string? targetKey, double killAmount)
+    {
+        return _attribution.ResolveDoomCredit(targetKey, killAmount);
+    }
+
+    private void ConsumeCreatureDied(LogEvent ev)
+    {
+        // Fix 4.4: fallback doom credit for a kill whose damage-based doom event was dropped at
+        // capture. The credited-targets set inside the engine prevents double-paying when the
+        // damage path already handled it.
+        var killHp = Number(ev.Metadata, "hp_at_death");
+        if (killHp <= 0)
+        {
+            killHp = Number(ev.Metadata, "lethal_damage");
+        }
+
+        _attribution.TryCreditDoomOnDeath(ev, killHp, ApplyIndirectDamage);
     }
 
     private void ConsumeDamageObserved(LogEvent ev)
@@ -413,8 +447,10 @@ public sealed class StatsAccumulator
 
     private static bool IsCompanionName(string? name)
     {
+        // The companion is spelled "Otsy" in code but "Osty" in real logs; accept both.
         var text = name ?? "";
-        return text.Contains("Otsy", StringComparison.OrdinalIgnoreCase);
+        return text.Contains("Otsy", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("Osty", StringComparison.OrdinalIgnoreCase);
     }
 
     private static double Number(Dictionary<string, object?> data, string key)
@@ -538,7 +574,7 @@ public sealed class StatsAccumulator
             return "potion";
         }
 
-        if (source.Contains("otsy") || source.Contains("pet") || source.Contains("companion"))
+        if (source.Contains("otsy") || source.Contains("osty") || source.Contains("companion"))
         {
             return "companion";
         }
