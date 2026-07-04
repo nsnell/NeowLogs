@@ -14,6 +14,11 @@ internal sealed class AttributionEngine
     private readonly Queue<string> _recentCombatDamageOrder = new();
     private readonly HashSet<string> _recentCombatDamage = new(StringComparer.OrdinalIgnoreCase);
 
+    // Fix 3d.1: once a target's doom kill is credited, every later doom-source event for
+    // that target (a duplicate observed/dealt pair, or a death hook) is ignored so doom
+    // credit pays out exactly once and never leaks to the last applier via a stale path.
+    private readonly HashSet<string> _doomCreditedTargets = new(StringComparer.OrdinalIgnoreCase);
+
     public void Reset()
     {
         ResetCombat();
@@ -27,6 +32,7 @@ internal sealed class AttributionEngine
         _sourceOwnerByName.Clear();
         _recentCombatDamageOrder.Clear();
         _recentCombatDamage.Clear();
+        _doomCreditedTargets.Clear();
     }
 
     public void FillCheckpoint(StatsCheckpoint checkpoint)
@@ -200,13 +206,27 @@ internal sealed class AttributionEngine
         }
         else if (kind.Equals("doom", StringComparison.OrdinalIgnoreCase) && IsDoomDamageSource(ev))
         {
+            // Fix 3d.1: a doom kill can surface as both damage_observed and damage_dealt (and
+            // now a creature_died event). Once credited, swallow the duplicates so they never
+            // fall through to the source-owner path and re-credit the last applier.
+            if (_doomCreditedTargets.Contains(targetKey))
+            {
+                return true;
+            }
+
             if (!Bool(ev.Metadata, "target_killed"))
             {
                 return false;
             }
 
             var amount = DoomKillCreditAmount(ev);
-            return SplitStatusDamageAndClear(ledger, amount, "doom", IsDoomStatus, apply);
+            var credited = SplitStatusDamageAndClear(ledger, amount, "doom", IsDoomStatus, apply);
+            if (credited)
+            {
+                _doomCreditedTargets.Add(targetKey);
+            }
+
+            return credited;
         }
         else
         {
@@ -224,6 +244,14 @@ internal sealed class AttributionEngine
 
         var targetKey = TargetKey(ev);
         if (string.IsNullOrWhiteSpace(targetKey) || !_indirectDamageByTarget.TryGetValue(targetKey, out var ledger))
+        {
+            return false;
+        }
+
+        // Fix 3d.1: only tidy up doom entries once the kill has actually been credited. Never
+        // wipe an uncredited doom ledger here — that used to destroy it before any split ran,
+        // sending the credit to the last applier via the source-owner fallback.
+        if (!_doomCreditedTargets.Contains(targetKey))
         {
             return false;
         }
@@ -253,12 +281,153 @@ internal sealed class AttributionEngine
             return;
         }
 
+        // Fix 2: prefer the measured Vulnerable delta (final - observed base). The hard-coded
+        // 1.5x estimate is a last resort, and only when a vuln window is genuinely active this
+        // turn, so ledger/game desyncs stop producing phantom credit.
+        var measuredBonus = MeasuredAmplifierBonus(ev, amount);
+        if (measuredBonus > 0)
+        {
+            ApplyTimedCredit(ledger, measuredBonus, ev.Turn, IsDamageAmplifierStatus, apply);
+            return;
+        }
+
+        if (!ev.Turn.HasValue || ActiveTimedIndex(ledger, ev.Turn.Value, IsDamageAmplifierStatus) < 0)
+        {
+            AdvanceTimedLedger(ledger, ev.Turn, IsDamageAmplifierStatus);
+            return;
+        }
+
         var estimatedBase = amount / 1.5;
         var bonus = Math.Max(0, amount - estimatedBase);
         if (bonus > 0)
         {
             ApplyTimedCredit(ledger, bonus, ev.Turn, IsDamageAmplifierStatus, apply);
         }
+    }
+
+    private static double MeasuredAmplifierBonus(LogEvent ev, double amount)
+    {
+        var bonus = Number(ev.Metadata, "vulnerable_bonus");
+        if (bonus > 0)
+        {
+            return bonus;
+        }
+
+        var baseAmount = ev.BaseAmount ?? 0;
+        return baseAmount > 0 && amount > baseAmount ? amount - baseAmount : 0;
+    }
+
+    // Fix 5: read-only resolution of the active amplifier owner(s) for a target, used at
+    // capture time to stamp amplified_by rows into the log. Does not mutate the ledger — the
+    // subsequent ApplyDamageAssist call advances it.
+    public IReadOnlyList<(string PlayerId, string PlayerName, string Status, double Bonus)> ResolveAmplifiers(string? targetKey, int? turn, double bonus)
+    {
+        var result = new List<(string, string, string, double)>();
+        if (bonus <= 0 || string.IsNullOrWhiteSpace(targetKey) || !_vulnerableByTarget.TryGetValue(targetKey, out var ledger))
+        {
+            return result;
+        }
+
+        var index = turn.HasValue ? ActiveTimedIndex(ledger, turn.Value, IsDamageAmplifierStatus) : -1;
+        if (index < 0)
+        {
+            index = ledger.FindIndex(entry => entry.Stacks > 0 && IsDamageAmplifierStatus(entry.Status));
+        }
+
+        if (index < 0)
+        {
+            return result;
+        }
+
+        var active = ledger[index];
+        result.Add((active.PlayerId, active.PlayerName, active.Status, bonus));
+        return result;
+    }
+
+    // Fix 3: expire timed ledgers on turn boundaries (from turn_started events), so stale
+    // Vulnerable/Weak windows on targets nobody hit this turn are cleaned up too.
+    public void AdvanceTurn(int turn)
+    {
+        foreach (var ledger in _vulnerableByTarget.Values)
+        {
+            AdvanceTimedLedger(ledger, turn, IsDamageAmplifierStatus);
+        }
+
+        foreach (var ledger in _damageReductionBySource.Values)
+        {
+            AdvanceTimedLedger(ledger, turn, IsWeakStatus);
+        }
+
+        foreach (var key in _vulnerableByTarget.Where(pair => pair.Value.Count == 0).Select(pair => pair.Key).ToList())
+        {
+            _vulnerableByTarget.Remove(key);
+        }
+
+        foreach (var key in _damageReductionBySource.Where(pair => pair.Value.Count == 0).Select(pair => pair.Key).ToList())
+        {
+            _damageReductionBySource.Remove(key);
+        }
+    }
+
+    // Fix 5 (#3): read-only proportional doom split for stamping doom_kill_credit rows into the
+    // log at capture time. Does not mutate or mark the ledger — the live meter still credits via
+    // the Consume path; these rows exist so report viewers render the same resolved numbers.
+    public IReadOnlyList<(string PlayerId, string PlayerName, double DoomApplied, double Credit)> ResolveDoomCredit(string? targetKey, double killAmount)
+    {
+        var result = new List<(string, string, double, double)>();
+        if (string.IsNullOrWhiteSpace(targetKey)
+            || _doomCreditedTargets.Contains(targetKey)
+            || !_indirectDamageByTarget.TryGetValue(targetKey, out var ledger))
+        {
+            return result;
+        }
+
+        var doomEntries = ledger.Where(entry => IsDoomStatus(entry.Status) && entry.Stacks > 0).ToArray();
+        var total = doomEntries.Sum(entry => entry.Stacks);
+        if (total <= 0)
+        {
+            return result;
+        }
+
+        var payout = killAmount > 0 ? Math.Min(killAmount, total) : total;
+        foreach (var entry in doomEntries)
+        {
+            result.Add((entry.PlayerId, entry.PlayerName, entry.Stacks, payout * entry.Stacks / total));
+        }
+
+        return result;
+    }
+
+    // Fix 4.4: proportional doom split driven by a creature_died event, for the case where the
+    // damage-based doom event was dropped at capture. Guarded by the credited-targets set so it
+    // never double-pays with the damage path.
+    public bool TryCreditDoomOnDeath(LogEvent ev, double killHp, Action<ActorRef, double, string> apply)
+    {
+        var targetKey = TargetKey(ev);
+        if (string.IsNullOrWhiteSpace(targetKey) || _doomCreditedTargets.Contains(targetKey))
+        {
+            return false;
+        }
+
+        if (!_indirectDamageByTarget.TryGetValue(targetKey, out var ledger))
+        {
+            return false;
+        }
+
+        var totalDoom = ledger.Where(entry => IsDoomStatus(entry.Status) && entry.Stacks > 0).Sum(entry => entry.Stacks);
+        if (totalDoom <= 0)
+        {
+            return false;
+        }
+
+        var amount = killHp > 0 ? Math.Min(killHp, totalDoom) : totalDoom;
+        var credited = SplitStatusDamageAndClear(ledger, amount, "doom", IsDoomStatus, apply);
+        if (credited)
+        {
+            _doomCreditedTargets.Add(targetKey);
+        }
+
+        return credited;
     }
 
     public void ApplyPreventedDamage(LogEvent ev, Action<ActorRef, double> apply)
@@ -338,6 +507,14 @@ internal sealed class AttributionEngine
 
     private void TrackSourceOwner(LogEvent ev, ActorRef actor, string status)
     {
+        // Fix 3c: doom and poison are shared, multi-owner debuffs and must only ever resolve
+        // through the per-target ledger. Registering them here would let whoever applied them
+        // most recently own the key and collect 100% of the credit in coop.
+        if (IsDoomStatus(status) || IsPoisonStatus(status))
+        {
+            return;
+        }
+
         var setup = new UtilitySetup(actor.PlayerId, actor.PlayerName, status, ev.Amount ?? 1);
         foreach (var key in SourceOwnerKeys(ev))
         {
@@ -583,9 +760,12 @@ internal sealed class AttributionEngine
 
     private static void AdvanceTimedLedger(List<UtilitySetup> ledger, int? currentTurn, Func<string, bool> statusPredicate)
     {
+        // Fix 3: expiry for Vulnerable/Weak is duration-based (turn windows), never per-hit.
+        // With no turn we only drop already-depleted entries; we never decrement a stack per
+        // hit (that per-hit decay was the poison model leaking into the timed-debuff path).
         if (!currentTurn.HasValue || !ledger.Any(entry => entry.AppliedTurn.HasValue && statusPredicate(entry.Status)))
         {
-            ConsumeOldestTimedUse(ledger, statusPredicate);
+            ledger.RemoveAll(entry => entry.Stacks <= 0 && statusPredicate(entry.Status));
             return;
         }
 
@@ -593,39 +773,6 @@ internal sealed class AttributionEngine
         for (var i = expiredIndexes.Count - 1; i >= 0; i--)
         {
             ledger.RemoveAt(expiredIndexes[i]);
-        }
-    }
-
-    private static void ConsumeOldestTimedUse(List<UtilitySetup> ledger, Func<string, bool> statusPredicate)
-    {
-        for (var i = ledger.Count - 1; i >= 0; i--)
-        {
-            var entry = ledger[i];
-            if (entry.Stacks <= 0 && statusPredicate(entry.Status))
-            {
-                ledger.RemoveAt(i);
-            }
-        }
-
-        for (var i = 0; i < ledger.Count; i++)
-        {
-            var first = ledger[i];
-            if (!statusPredicate(first.Status))
-            {
-                continue;
-            }
-
-            var remainingStacks = first.Stacks - 1;
-            if (remainingStacks <= 0.001)
-            {
-                ledger.RemoveAt(i);
-            }
-            else
-            {
-                ledger[i] = first with { Stacks = remainingStacks };
-            }
-
-            return;
         }
     }
 
@@ -720,7 +867,10 @@ internal sealed class AttributionEngine
             return true;
         }
 
-        var statusText = $"{Text(ev.Metadata, "power")} {Text(ev.Metadata, "status")} {Text(ev.Metadata, "damage_source_type")} {Text(ev.Metadata, "damage_source_name")} {Text(ev.Metadata, "damage_source_power")} {Text(ev.Metadata, "observed_power")}".ToLowerInvariant();
+        // Fix 3b/4.3: use the same broad SourceText helper as IsDoomDamageSource so an event
+        // whose only doom/poison marker is its SourceName (or source_name metadata) still
+        // passes the gate. The narrow field list here previously dropped those events.
+        var statusText = SourceText(ev);
         if (!statusText.Contains("poison") && !statusText.Contains("doom"))
         {
             return false;
@@ -838,18 +988,39 @@ internal sealed class AttributionEngine
 
     private static string IndirectDamageKind(LogEvent ev)
     {
-        var text = SourceText(ev);
-        if (text.Contains("otsy") || text.Contains("pet") || text.Contains("companion"))
+        // Fix 3d.2: an explicit kind wins, then doom, then poison, then companion. Companion
+        // is matched via structured flags rather than a substring sweep over everything,
+        // because metadata snapshots carry stale pet fields that misclassified doom/poison
+        // as companion damage.
+        var explicitKind = Text(ev.Metadata, "indirect_damage_kind");
+        if (!string.IsNullOrWhiteSpace(explicitKind))
         {
-            return "companion";
+            return explicitKind.ToLowerInvariant();
         }
 
+        var text = SourceText(ev);
         if (text.Contains("doom"))
         {
             return "doom";
         }
 
+        if (text.Contains("poison"))
+        {
+            return "poison";
+        }
+
+        if (Bool(ev.Metadata, "pet_is_pet") || Bool(ev.Metadata, "actor_is_pet") || IsCompanionText(text))
+        {
+            return "companion";
+        }
+
         return "poison";
+    }
+
+    private static bool IsCompanionText(string text)
+    {
+        // The companion is spelled "Otsy" in code but "Osty" in real logs; accept both.
+        return text.Contains("otsy") || text.Contains("osty") || text.Contains("companion");
     }
 
     private static IEnumerable<string> SourceOwnerKeys(LogEvent ev)

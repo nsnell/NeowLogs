@@ -4,8 +4,10 @@ namespace NeowLogs.NeowLogsCode.Events;
 
 public sealed class LogEvent
 {
+    // Schema 2 adds: real per-turn values, turn_started/creature_died events, corrected
+    // base_amount (pre-amplification), vulnerable_bonus, and resolved amplified_by rows.
     [JsonPropertyName("schema_version")]
-    public int SchemaVersion { get; init; } = 1;
+    public int SchemaVersion { get; init; } = 2;
 
     [JsonPropertyName("run_id")]
     public string RunId { get; init; } = "";

@@ -179,7 +179,8 @@
       return ["card_played", "block_gained", "healing_done", "debuff_applied", "buff_applied", "power_applied", "damage_taken"].includes(type) && Boolean(event.actor_name || event.actor_player_id);
     }
     function isCompanionName(value) {
-      return String(value || "").toLowerCase().includes("otsy");
+      const text = String(value || "").toLowerCase();
+      return text.includes("otsy") || text.includes("osty");
     }
     function isEnemyActor(event) {
       if (meta(event, "actor_is_enemy") !== undefined) return truthy(meta(event, "actor_is_enemy"));
@@ -219,7 +220,7 @@
       if (text.includes("doom")) return "doom";
       if (text.includes("poison")) return "poison";
       if (text.includes("potion")) return "potion";
-      if (text.includes("otsy") || text.includes("pet") || text.includes("companion")) return "companion";
+      if (text.includes("otsy") || text.includes("osty") || text.includes("companion")) return "companion";
       return "direct";
     }
     function blockContribution(stats) {
@@ -322,9 +323,12 @@
       return candidates.length ? Math.min(...candidates) : 0;
     }
     function indirectDamageKind(event) {
-      const text = `${event.source_type || ""} ${event.source_name || ""} ${meta(event, "indirect_damage_kind") || ""} ${meta(event, "power") || ""} ${meta(event, "status") || ""} ${meta(event, "damage_source_type") || ""} ${meta(event, "damage_source_name") || ""} ${meta(event, "companion_name") || ""}`.toLowerCase();
-      if (text.includes("otsy") || text.includes("pet") || text.includes("companion")) return "companion";
+      const explicitKind = String(meta(event, "indirect_damage_kind") || "").toLowerCase();
+      if (explicitKind) return explicitKind;
+      const text = `${event.source_type || ""} ${event.source_name || ""} ${meta(event, "power") || ""} ${meta(event, "status") || ""} ${meta(event, "damage_source_type") || ""} ${meta(event, "damage_source_name") || ""} ${meta(event, "companion_name") || ""}`.toLowerCase();
       if (text.includes("doom")) return "doom";
+      if (text.includes("poison")) return "poison";
+      if (truthy(meta(event, "pet_is_pet")) || truthy(meta(event, "actor_is_pet")) || text.includes("otsy") || text.includes("osty") || text.includes("companion")) return "companion";
       return "poison";
     }
     function isPromotableObservedDamage(event) {
@@ -841,8 +845,13 @@
           } else if (status.includes("doom") && targetKey) {
             addLedgerEntry(indirectDamageByTarget, targetKey, actor, status, amount || 1);
           }
-          for (const key of sourceOwnerKeys(event)) {
-            sourceOwnerByName[key] = { player: actor, status, stacks: amount || 1 };
+          // Fix 3c: doom/poison are shared, multi-owner debuffs and must resolve only through
+          // the per-target ledger. Registering them as a single source owner credited the last
+          // applier for the whole fight in coop.
+          if (!status.includes("doom") && !status.includes("poison")) {
+            for (const key of sourceOwnerKeys(event)) {
+              sourceOwnerByName[key] = { player: actor, status, stacks: amount || 1 };
+            }
           }
           if (status.includes("weak") && targetKey) {
             addTimedLedgerEntry(reductionBySource, targetKey, actor, status, Math.abs(amount || 1), event.turn);

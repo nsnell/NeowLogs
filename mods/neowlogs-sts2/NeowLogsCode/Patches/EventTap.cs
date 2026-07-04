@@ -15,6 +15,30 @@ public static class EventTap
     private static readonly Dictionary<(Type Type, string Name), MemberInfo?> DirectMemberCache = new();
     private static readonly Dictionary<string, RecentCard> RecentCardByActor = new(StringComparer.OrdinalIgnoreCase);
 
+    private sealed record ObservedDamage(double Amount, long SeenAtTicks);
+
+    // Fix 2: short-lived cache of the pre-receiver-modifier (pre-Vulnerable) damage
+    // captured by CreatureCmd.Damage, keyed by target, so the paired CombatHistory
+    // damage_dealt event can compute the exact amplification delta.
+    private static readonly Dictionary<string, Queue<ObservedDamage>> RecentObservedByTarget = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly long ObservedDamageTtlTicks = TimeSpan.FromSeconds(3).Ticks;
+
+    // Fix 1a: candidate member names for the current turn on CombatState (args[0] of
+    // every CombatHistory callback). Dotted names are traversed member-by-member.
+    private static readonly string[] TurnMemberCandidates =
+    {
+        "TurnNumber", "CurrentTurnNumber", "CurrentTurn", "Turn", "RoundNumber", "Round", "TurnCount",
+        "TurnState.TurnNumber", "TurnState.Turn", "TurnManager.TurnNumber", "TurnController.TurnNumber"
+    };
+
+    private static string? _turnDumpCombatId;
+    private static string? _observedCombatId;
+    private static int _lastKnownTurn;
+
+    // Fix 5 (#3): targets whose doom_kill_credit rows have already been written this combat, so
+    // the same kill surfacing as both a damage event and a creature_died event is stamped once.
+    private static readonly HashSet<string> DoomCreditEmitted = new(StringComparer.OrdinalIgnoreCase);
+
     public static void RegisterMethodEventType(MethodBase method, string eventType)
     {
         MethodEventTypes[method] = eventType;
@@ -247,6 +271,13 @@ public static class EventTap
                 sourceType: eventSourceType,
                 sourceName: eventSourceName,
                 metadata: eventMetadata);
+
+            // Fix 2: CreatureCmd.Damage carries the pre-receiver-modifier (pre-Vulnerable)
+            // amount. Cache it so the paired CombatHistory damage_dealt can measure the delta.
+            if (IsEnemyLike(target))
+            {
+                CacheObservedDamage(CreatureId(target) ?? CreatureName(target), amount);
+            }
         }
 
         return true;
@@ -520,6 +551,30 @@ public static class EventTap
         var metadata = Snapshot(instance, args);
         metadata["history_method"] = methodName;
 
+        // Fix 1a: CombatState is args[0] on every CombatHistory callback. Stamp the real
+        // turn onto the metadata so EventRecorder.Record advances its turn counter instead
+        // of freezing it at 1. This unblocks the timed Vulnerable/Weak ledgers.
+        var combatState = args.Length > 0 ? args[0] : null;
+        ResetPerCombatCaches(NeowLogsMod.Recorder.CombatId);
+        var turn = TryReadTurn(combatState);
+        if (turn.HasValue)
+        {
+            metadata["turn"] = turn.Value;
+            _lastKnownTurn = turn.Value;
+        }
+        else
+        {
+            MaybeDumpCombatStateMembers(combatState);
+        }
+
+        // Fix 1b: explicit turn-boundary event so the accumulator/viewers can expire
+        // timed ledgers deterministically on turn transitions, not only when a hit lands.
+        if (eventType == "turn_started")
+        {
+            RecordTurnStarted(combatState, metadata, methodName);
+            return true;
+        }
+
         switch (methodName)
         {
             case "CreatureAttacked":
@@ -537,9 +592,290 @@ public static class EventTap
             case "CardPlayFinished":
                 RecordCardPlay(args, metadata, "card_play_finished");
                 return true;
+            case "CreatureDied":
+            case "CreatureKilled":
+            case "Died":
+            case "OnCreatureDied":
+            case "CreatureDefeated":
+                RecordCreatureDied(args, metadata);
+                return true;
         }
 
         return false;
+    }
+
+    private static void RecordCreatureDied(object[] args, Dictionary<string, object?> metadata)
+    {
+        var victim = FirstCreature(args.Skip(1)) ?? FirstCreature(args.AsEnumerable());
+        if (victim == null)
+        {
+            return;
+        }
+
+        var hpAtDeath = NumberMember(victim, "CurrentHp") ?? 0;
+        var maxHp = NumberMember(victim, "MaxHp") ?? 0;
+        AddCreatureMetadata(metadata, "target", victim);
+        metadata["hp_at_death"] = hpAtDeath;
+        metadata["max_hp"] = maxHp;
+
+        // Fix 4.2: capture status stacks straight off the corpse so "did this die to doom"
+        // is a structured check instead of string sniffing the source.
+        var doomStacks = ReadStatusStacks(victim, "doom");
+        if (doomStacks.HasValue)
+        {
+            metadata["doom_stacks_at_death"] = doomStacks.Value;
+        }
+
+        var poisonStacks = ReadStatusStacks(victim, "poison");
+        if (poisonStacks.HasValue)
+        {
+            metadata["poison_stacks_at_death"] = poisonStacks.Value;
+        }
+
+        // Fix 5 (#3): the death hook is the reliable place to resolve doom credit, since the
+        // doom stacks are read straight off the corpse rather than sniffed from source text.
+        if (doomStacks is > 0)
+        {
+            TryEmitDoomCredit(metadata, CreatureId(victim) ?? CreatureName(victim), hpAtDeath > 0 ? hpAtDeath : doomStacks.Value);
+        }
+
+        NeowLogsMod.Recorder.Record(
+            "creature_died",
+            targetId: CreatureId(victim),
+            targetName: CreatureName(victim),
+            amount: hpAtDeath > 0 ? hpAtDeath : maxHp,
+            sourceType: "combat_history",
+            sourceName: "CreatureDied",
+            metadata: metadata);
+    }
+
+    private static double? ReadStatusStacks(object? creature, string statusSubstring)
+    {
+        if (creature == null)
+        {
+            return null;
+        }
+
+        foreach (var member in new[] { "Powers", "PowerList", "ActivePowers", "StatusEffects", "Statuses" })
+        {
+            var powers = ReadMemberDeep(creature, member, 1, []);
+            foreach (var power in Enumerate(powers))
+            {
+                if (power == null)
+                {
+                    continue;
+                }
+
+                var name = (PowerName(power) ?? StringMember(power, "Id") ?? "").ToLowerInvariant();
+                if (name.Contains(statusSubstring, StringComparison.Ordinal))
+                {
+                    return NumberMember(power, "Amount") ?? NumberMember(power, "Stacks") ?? NumberMember(power, "Stack");
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static int? TryReadTurn(object? combatState)
+    {
+        if (combatState == null)
+        {
+            return null;
+        }
+
+        foreach (var candidate in TurnMemberCandidates)
+        {
+            var value = ReadDottedMember(combatState, candidate);
+            if (value != null && double.TryParse(value.ToString(), out var parsed) && parsed >= 1 && parsed < 10000)
+            {
+                return (int)parsed;
+            }
+        }
+
+        return null;
+    }
+
+    private static object? ReadDottedMember(object? root, string path)
+    {
+        object? cursor = root;
+        foreach (var part in path.Split('.'))
+        {
+            if (cursor == null)
+            {
+                return null;
+            }
+
+            cursor = ReadMember(cursor, part);
+        }
+
+        return cursor;
+    }
+
+    private static int? CurrentTurn(Dictionary<string, object?> metadata)
+    {
+        if (metadata.TryGetValue("turn", out var value) && value != null && int.TryParse(value.ToString(), out var parsed))
+        {
+            return parsed;
+        }
+
+        return _lastKnownTurn > 0 ? _lastKnownTurn : null;
+    }
+
+    private static void RecordTurnStarted(object? combatState, Dictionary<string, object?> metadata, string methodName)
+    {
+        var turn = TryReadTurn(combatState) ?? (_lastKnownTurn > 0 ? _lastKnownTurn : 1);
+        metadata["turn"] = turn;
+        metadata["turn_transition_method"] = methodName;
+        _lastKnownTurn = turn;
+        NeowLogsMod.Recorder.Record("turn_started", amount: turn, sourceType: "combat_history", sourceName: methodName, metadata: metadata);
+    }
+
+    private static void MaybeDumpCombatStateMembers(object? combatState)
+    {
+        if (combatState == null)
+        {
+            return;
+        }
+
+        var combatId = NeowLogsMod.Recorder.CombatId ?? "no-combat";
+        if (string.Equals(_turnDumpCombatId, combatId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _turnDumpCombatId = combatId;
+        try
+        {
+            var members = combatState.GetType()
+                .GetMembers(BindingFlags.Instance | BindingFlags.Public)
+                .Where(member => (member is PropertyInfo property && property.GetIndexParameters().Length == 0) || member is FieldInfo)
+                .Select(member => member.Name)
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(name => name, StringComparer.Ordinal);
+            NeowLogsMod.Logger.Warn($"NeowLogs turn member not found on {combatState.GetType().FullName}; add one of these to TurnMemberCandidates: {string.Join(", ", members)}");
+        }
+        catch
+        {
+        }
+    }
+
+    private static void ResetPerCombatCaches(string? combatId)
+    {
+        if (string.Equals(_observedCombatId, combatId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _observedCombatId = combatId;
+        lock (RecentObservedByTarget)
+        {
+            RecentObservedByTarget.Clear();
+        }
+
+        DoomCreditEmitted.Clear();
+    }
+
+    private static void TryEmitDoomCredit(Dictionary<string, object?> metadata, string? targetKey, double killAmount)
+    {
+        if (string.IsNullOrWhiteSpace(targetKey) || DoomCreditEmitted.Contains(targetKey))
+        {
+            return;
+        }
+
+        var credit = NeowLogsMod.Stats.ResolveDoomCredit(targetKey, killAmount);
+        if (credit.Count == 0)
+        {
+            return;
+        }
+
+        DoomCreditEmitted.Add(targetKey);
+        var rows = new List<Dictionary<string, object?>>();
+        foreach (var entry in credit)
+        {
+            rows.Add(new Dictionary<string, object?>
+            {
+                ["player_id"] = entry.PlayerId,
+                ["player_name"] = entry.PlayerName,
+                ["doom_applied"] = entry.DoomApplied,
+                ["credit"] = entry.Credit
+            });
+        }
+
+        metadata["doom_kill_credit"] = rows;
+    }
+
+    private static void CacheObservedDamage(string? targetKey, double amount)
+    {
+        if (string.IsNullOrWhiteSpace(targetKey) || amount <= 0)
+        {
+            return;
+        }
+
+        lock (RecentObservedByTarget)
+        {
+            if (!RecentObservedByTarget.TryGetValue(targetKey, out var queue))
+            {
+                queue = new Queue<ObservedDamage>();
+                RecentObservedByTarget[targetKey] = queue;
+            }
+
+            queue.Enqueue(new ObservedDamage(amount, DateTime.UtcNow.Ticks));
+            while (queue.Count > 8)
+            {
+                queue.Dequeue();
+            }
+        }
+    }
+
+    private static double? TakeObservedDamage(string? targetKey, double finalAmount)
+    {
+        if (string.IsNullOrWhiteSpace(targetKey))
+        {
+            return null;
+        }
+
+        lock (RecentObservedByTarget)
+        {
+            if (!RecentObservedByTarget.TryGetValue(targetKey, out var queue))
+            {
+                return null;
+            }
+
+            var now = DateTime.UtcNow.Ticks;
+            while (queue.Count > 0)
+            {
+                var candidate = queue.Peek();
+                if (now - candidate.SeenAtTicks > ObservedDamageTtlTicks)
+                {
+                    queue.Dequeue();
+                    continue;
+                }
+
+                queue.Dequeue();
+                return candidate.Amount;
+            }
+        }
+
+        return null;
+    }
+
+    private static List<Dictionary<string, object?>> BuildAmplifierRows(IReadOnlyList<(string PlayerId, string PlayerName, string Status, double Bonus)> amplifiers)
+    {
+        var rows = new List<Dictionary<string, object?>>();
+        foreach (var amplifier in amplifiers)
+        {
+            rows.Add(new Dictionary<string, object?>
+            {
+                ["type"] = amplifier.Status,
+                ["status"] = amplifier.Status,
+                ["applied_by_player_id"] = amplifier.PlayerId,
+                ["applied_by_name"] = amplifier.PlayerName,
+                ["bonus_damage"] = amplifier.Bonus
+            });
+        }
+
+        return rows;
     }
 
     private static void RecordCreatureAttacked(object[] args, Dictionary<string, object?> metadata)
@@ -568,14 +904,55 @@ public static class EventTap
                 metadata["indirect_damage_kind"] = "companion";
                 metadata["companion_name"] = sourceName;
             }
-            if (amount <= 0 && BoolMember(result, "WasTargetKilled") && IsIndirectDamageText(sourceType, sourceName, damageSource))
+            // Fix 4.1(b): never silently drop a kill just because its damage resolved to
+            // zero (doom/poison and other indirect lethal blows land here). Record it with
+            // the lethal amount and a flag so the accumulator decides how to attribute it,
+            // instead of the capture layer guessing from source text.
+            var killWithZeroDamage = false;
+            if (amount <= 0 && BoolMember(result, "WasTargetKilled"))
             {
                 amount = LethalDamageAmount(result);
                 metadata["lethal_damage"] = amount;
+                metadata["kill_with_zero_damage"] = true;
+                killWithZeroDamage = true;
             }
             if (amount <= 0)
             {
                 continue;
+            }
+
+            // Fix 2: pair the pre-amplification observed base (from CreatureCmd.Damage) with
+            // this final hit to measure the exact Vulnerable delta rather than estimating it.
+            var targetKey = CreatureId(receiver) ?? CreatureName(receiver);
+            var baseAmount = amount;
+            if (!killWithZeroDamage && IsEnemyLike(receiver))
+            {
+                var observedBase = TakeObservedDamage(targetKey, amount);
+                if (observedBase is > 0 && observedBase.Value < amount)
+                {
+                    baseAmount = observedBase.Value;
+                    var bonus = amount - baseAmount;
+                    metadata["measured_base_amount"] = baseAmount;
+                    metadata["vulnerable_bonus"] = bonus;
+
+                    // Fix 5: resolve the amplifier owner from the (already-populated) debuff
+                    // ledger and write it into the log so the meter and every viewer credit
+                    // the same measured bonus instead of re-deriving it with divergent math.
+                    var amplifiers = NeowLogsMod.Stats.ResolveAmplifiers(targetKey, CurrentTurn(metadata), bonus);
+                    if (amplifiers.Count > 0)
+                    {
+                        metadata["amplified_by"] = BuildAmplifierRows(amplifiers);
+                    }
+                }
+            }
+
+            // Fix 5 (#3): stamp resolved doom credit onto a doom kill that carries a doom marker.
+            // Doom kills with no marker at all are handled by the creature_died death hook instead.
+            if (BoolMember(result, "WasTargetKilled")
+                && ($"{sourceType} {sourceName}".Contains("doom", StringComparison.OrdinalIgnoreCase)
+                    || (CreatureName(damageSource) ?? "").Contains("doom", StringComparison.OrdinalIgnoreCase)))
+            {
+                TryEmitDoomCredit(metadata, targetKey, amount);
             }
 
             AddCreatureMetadata(metadata, "actor", owner);
@@ -600,7 +977,7 @@ public static class EventTap
                 targetId: CreatureId(receiver),
                 targetName: CreatureName(receiver),
                 amount: amount,
-                baseAmount: amount,
+                baseAmount: baseAmount,
                 sourceType: sourceType,
                 sourceName: sourceName,
                 metadata: metadata);
@@ -1379,7 +1756,8 @@ public static class EventTap
             && IsPlayerLike(owner)
             && (BoolMember(damageSource, "IsPet")
                 || string.Equals(StringMember(damageSource, "Side"), "Player", StringComparison.OrdinalIgnoreCase)
-                || (CreatureName(damageSource) ?? "").Contains("Otsy", StringComparison.OrdinalIgnoreCase));
+                || (CreatureName(damageSource) ?? "").Contains("Otsy", StringComparison.OrdinalIgnoreCase)
+                || (CreatureName(damageSource) ?? "").Contains("Osty", StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool IsDefectLike(object? actor)
