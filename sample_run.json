@@ -1,0 +1,30 @@
+{
+  "run_name": "Sample Coop Run",
+  "started_at": "2026-06-15",
+  "players": ["Mira", "Dax", "Sol"],
+  "events": [
+    { "act": 1, "turn": 1, "player": "Mira", "type": "damage", "target": "Cultist", "source": "Strike", "amount": 6, "base_amount": 6 },
+    { "act": 1, "turn": 1, "player": "Dax", "type": "block", "source": "Defend", "amount": 5 },
+    { "act": 1, "turn": 1, "player": "Sol", "type": "apply_status", "status": "vulnerable", "target": "Cultist", "source": "Expose", "amount": 2 },
+    { "act": 1, "turn": 2, "player": "Mira", "type": "damage", "target": "Cultist", "source": "Heavy Blade", "amount": 18, "base_amount": 12 },
+    { "act": 1, "turn": 2, "player": "Sol", "type": "draw", "source": "Tactical Read", "amount": 2 },
+    { "act": 1, "turn": 3, "player": "Dax", "type": "block", "source": "Entrench", "amount": 14 },
+    { "act": 1, "turn": 3, "player": "Dax", "type": "damage", "target": "Louse", "source": "Body Slam", "amount": 20, "base_amount": 20 },
+
+    { "act": 2, "turn": 1, "player": "Sol", "type": "apply_status", "status": "vulnerable", "target": "Slaver", "source": "Marked Opening", "amount": 3 },
+    { "act": 2, "turn": 1, "player": "Mira", "type": "damage", "target": "Slaver", "source": "Twin Strike", "amount": 24, "base_amount": 16 },
+    { "act": 2, "turn": 1, "player": "Dax", "type": "block", "source": "Barricade Plan", "amount": 18 },
+    { "act": 2, "turn": 2, "player": "Sol", "type": "energy", "source": "Battery Relay", "amount": 1 },
+    { "act": 2, "turn": 2, "player": "Mira", "type": "damage", "target": "Taskmaster", "source": "Limit Break", "amount": 35, "base_amount": 35 },
+    { "act": 2, "turn": 3, "player": "Sol", "type": "apply_status", "status": "weak", "target": "Taskmaster", "source": "Disorient", "amount": 2 },
+    { "act": 2, "turn": 3, "player": "Dax", "type": "heal", "source": "Camp Kit", "amount": 6 },
+
+    { "act": 3, "turn": 1, "player": "Sol", "type": "apply_status", "status": "vulnerable", "target": "Giant Head", "source": "Crack Armor", "amount": 2 },
+    { "act": 3, "turn": 1, "player": "Mira", "type": "damage", "target": "Giant Head", "source": "Whirlwind", "amount": 54, "base_amount": 36 },
+    { "act": 3, "turn": 2, "player": "Dax", "type": "block", "source": "Impervious", "amount": 30 },
+    { "act": 3, "turn": 2, "player": "Sol", "type": "utility", "source": "Artifact Strip", "amount": 1, "note": "Removed artifact before vulnerable turn" },
+    { "act": 3, "turn": 3, "player": "Dax", "type": "damage", "target": "Giant Head", "source": "Body Slam", "amount": 42, "base_amount": 42 },
+    { "act": 3, "turn": 3, "player": "Mira", "type": "damage", "target": "Giant Head", "source": "Finisher", "amount": 64, "base_amount": 64 }
+  ]
+}
+

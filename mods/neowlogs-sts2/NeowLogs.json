@@ -1,0 +1,11 @@
+{
+  "id": "NeowLogs",
+  "name": "NeowLogs",
+  "author": "NeowLogs",
+  "description": "Co-op combat logging and live leaderboard meter for Slay the Spire 2.",
+  "version": "v0.1.0",
+  "has_pck": false,
+  "has_dll": true,
+  "dependencies": [],
+  "affects_gameplay": false
+}

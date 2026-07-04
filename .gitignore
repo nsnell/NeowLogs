@@ -1,0 +1,32 @@
+# Local tool/runtime state
+.appdata/
+.dotnet/
+.git/
+.codex-git/
+.vs/
+.vscode/
+
+# Build outputs
+bin/
+obj/
+.godot/
+*.pdb
+
+# Generated reports and local run data
+reports/
+latest-*.html
+report.html
+real-run-report.html
+mod-sample-report.html
+runs/*.run
+runs/*.jsonl
+steam-workshop/
+
+# StS2 / Godot transient files
+*.tmp
+*.log
+*.user
+
+# OS cruft
+Thumbs.db
+Desktop.ini

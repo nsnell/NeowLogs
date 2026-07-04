@@ -1,0 +1,9 @@
+<Project>
+  <PropertyGroup>
+    <!-- Set this manually if automatic Steam path discovery fails. -->
+    <Sts2InstallDir>D:\SteamLibrary\steamapps\common\Slay the Spire 2</Sts2InstallDir>
+    <GodotPath></GodotPath>
+    <PublicizeSts>false</PublicizeSts>
+  </PropertyGroup>
+</Project>
+

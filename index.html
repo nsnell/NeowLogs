@@ -1,0 +1,949 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NeowLogs Report Viewer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0e1117;
+      --panel: #171c25;
+      --panel-2: #202736;
+      --line: #30384a;
+      --text: #eef3fb;
+      --muted: #9ba7ba;
+      --gold: #f4c86a;
+      --blue: #7db2ff;
+      --green: #69d79a;
+      --red: #ee746f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top left, #20283a 0, #0e1117 34rem);
+      color: var(--text);
+      font: 14px/1.45 "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    header, main { width: min(1280px, calc(100vw - 40px)); margin: 0 auto; }
+    header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 26px 0 18px;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 6px; font-size: 42px; letter-spacing: 0; }
+    h2 { margin-bottom: 12px; font-size: 16px; }
+    h3 { margin-bottom: 8px; color: var(--muted); font-size: 11px; text-transform: uppercase; }
+    main { padding-bottom: 42px; }
+    button, .file {
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 12px;
+      background: var(--panel-2);
+      color: var(--text);
+      cursor: pointer;
+    }
+    button:hover, .file:hover { border-color: var(--blue); }
+    button:disabled { opacity: .45; cursor: default; }
+    input[type="file"] { display: none; }
+    .name-input {
+      width: 100%;
+      min-width: 90px;
+      color: var(--text);
+      background: rgba(12, 16, 24, .88);
+      border: 1px solid transparent;
+      border-radius: 4px;
+      padding: 4px 6px;
+      font: inherit;
+      font-weight: 700;
+    }
+    .name-input:focus { outline: none; border-color: var(--blue); }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    .muted { color: var(--muted); }
+    .drop {
+      display: grid;
+      place-items: center;
+      min-height: 280px;
+      border: 1px dashed #4a556b;
+      border-radius: 8px;
+      background: rgba(23, 28, 37, .82);
+      text-align: center;
+      padding: 28px;
+      box-shadow: 0 18px 45px rgba(0,0,0,.22);
+    }
+    .drop.dragging { border-color: var(--green); background: rgba(29, 48, 38, .86); }
+    .drop h2 { margin-bottom: 6px; font-size: 24px; }
+    .grid { display: grid; gap: 14px; }
+    .cards { grid-template-columns: repeat(5, minmax(0, 1fr)); margin-bottom: 14px; }
+    .boards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .two { grid-template-columns: 1.2fr .8fr; margin-top: 14px; }
+    .panel, .metric {
+      background: rgba(23, 28, 37, .94);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      box-shadow: 0 18px 45px rgba(0,0,0,.22);
+    }
+    .metric strong { display: block; font-size: 32px; line-height: 1; }
+    table { width: 100%; border-collapse: collapse; }
+    td, th { padding: 8px 7px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+    tr:last-child td { border-bottom: 0; }
+    th { color: var(--muted); font-size: 11px; text-transform: uppercase; }
+    .num, .rank { text-align: right; font-variant-numeric: tabular-nums; }
+    .rank { width: 28px; color: var(--gold); }
+    .player { font-weight: 700; }
+    .bar { display: flex; height: 7px; width: 80px; overflow: hidden; border-radius: 99px; background: #0b0f16; }
+    .bar span { display: block; height: 100%; }
+    .bar-main { background: linear-gradient(90deg, var(--blue), var(--green)); }
+    .bar-assist { background: var(--gold); }
+    .bar-poison { background: #7ee06b; }
+    .bar-companion { background: #d7a0ff; }
+    .board td:nth-child(2) { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+    .section { margin-top: 14px; }
+    .note { margin-top: 10px; color: var(--muted); font-size: 12px; }
+    .hidden { display: none; }
+    @media (max-width: 1050px) {
+      header { display: block; }
+      .actions { margin-top: 14px; }
+      .cards, .boards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .two { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>NeowLogs</h1>
+      <p class="muted">Drop a local NeowLogs JSONL event file and get a shareable leaderboard report.</p>
+    </div>
+    <div class="actions">
+      <label class="file">Choose Log<input id="fileInput" type="file" accept=".jsonl,.json,application/json"></label>
+      <button id="sampleButton" type="button">Load Sample</button>
+      <button id="exportButton" type="button" disabled>Export HTML</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="drop" class="drop">
+      <div>
+        <h2>Drop your NeowLogs run here</h2>
+        <p class="muted">Use files from <code>%LOCALAPPDATA%\NeowLogs\runs</code>, such as <code>20260615-232258.jsonl</code>.</p>
+      </div>
+    </section>
+    <section id="report" class="hidden"></section>
+  </main>
+
+  <script>
+    const utilityStatuses = new Set(["vulnerable", "debilitate", "weak", "frail", "mark", "lock_on", "doom", "strength_down", "artifact_strip", "strength"]);
+    let latestReport = "";
+    let latestAnalysis = null;
+    const playerAliases = {};
+
+    const sampleEvents = [
+      { run_id: "sample-coop", timestamp_ms: 100, actor_name: "Mira", event_type: "card_played", amount: 1, source_name: "Bash", target_name: "Jaw Worm", metadata: { actor_is_player: true, card_type: "Attack", energy_spent: 2 } },
+      { run_id: "sample-coop", timestamp_ms: 200, actor_name: "Mira", event_type: "damage_dealt", amount: 10, base_amount: 10, source_name: "Bash", target_name: "Jaw Worm", metadata: { actor_is_player: true } },
+      { run_id: "sample-coop", timestamp_ms: 300, actor_name: "Mira", event_type: "debuff_applied", amount: 2, source_name: "Bash", target_name: "Jaw Worm", metadata: { actor_is_player: true, status: "vulnerable" } },
+      { run_id: "sample-coop", timestamp_ms: 400, actor_name: "Dax", event_type: "block_gained", amount: 14, source_name: "Defend+", metadata: { actor_is_player: true, card_type: "Skill", energy_spent: 1 } },
+      { run_id: "sample-coop", timestamp_ms: 500, actor_name: "Sol", event_type: "card_drawn", amount: 2, source_name: "Tactical Read", metadata: { actor_is_player: true } },
+      { run_id: "sample-coop", timestamp_ms: 600, actor_name: "Jaw Worm", event_type: "damage_dealt", amount: 6, source_name: "Chomp", target_name: "Dax", metadata: { actor_is_enemy: true, actor_side: "Enemy" } },
+      { run_id: "sample-coop", timestamp_ms: 700, actor_name: "Dax", event_type: "damage_taken", amount: 6, source_name: "Jaw Worm", metadata: { actor_is_player: true } },
+      { run_id: "sample-coop", timestamp_ms: 800, actor_name: "Sol", event_type: "healing_done", amount: 5, source_name: "Camp Kit", metadata: { actor_is_player: true } }
+    ];
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    }
+    function num(value) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+    function meta(event, key) {
+      return event.metadata && Object.prototype.hasOwnProperty.call(event.metadata, key) ? event.metadata[key] : undefined;
+    }
+    function truthy(value) {
+      return value === true || String(value).toLowerCase() === "true" || String(value) === "1";
+    }
+    function isPlayerActor(event) {
+      if (truthy(meta(event, "actor_is_pet")) || isCompanionName(event.actor_name) || isCompanionName(meta(event, "actor_display_name"))) return false;
+      if (meta(event, "actor_is_player") !== undefined) return truthy(meta(event, "actor_is_player"));
+      if (meta(event, "actor_side") === "Player") return true;
+      if (meta(event, "actor_side") === "Enemy") return false;
+      const type = String(event.event_type || event.type || "").toLowerCase();
+      return ["card_played", "block_gained", "healing_done", "debuff_applied", "buff_applied", "power_applied", "damage_taken"].includes(type) && Boolean(event.actor_name || event.actor_player_id);
+    }
+    function isCompanionName(value) {
+      return String(value || "").toLowerCase().includes("otsy");
+    }
+    function isEnemyActor(event) {
+      if (meta(event, "actor_is_enemy") !== undefined) return truthy(meta(event, "actor_is_enemy"));
+      return meta(event, "actor_side") === "Enemy";
+    }
+    function isPlayerTarget(event) {
+      if (meta(event, "target_is_player") !== undefined) return truthy(meta(event, "target_is_player"));
+      return meta(event, "target_side") === "Player";
+    }
+    function isEnemyTarget(event) {
+      if (meta(event, "target_is_enemy") !== undefined) return truthy(meta(event, "target_is_enemy"));
+      return meta(event, "target_side") === "Enemy";
+    }
+    function blankStats(displayName = "Unknown") {
+      return { displayName, damage: 0, direct: 0, damageAssist: 0, poisonDamage: 0, companionDamage: 0, block: 0, companionBlock: 0, damageBlocked: 0, preventedDamage: 0, utilityScore: 0, utilityDamage: 0, taken: 0, healing: 0, cards: 0, attacks: 0, skills: 0, powers: 0, energy: 0, utilityEvents: 0, statuses: {}, sources: {} };
+    }
+    function ensure(map, key, displayName) {
+      const name = key || "Unknown";
+      if (!map[name]) map[name] = blankStats(displayName || name);
+      else if (displayName && !isPlaceholderDisplayName(displayName) && isPlaceholderDisplayName(map[name].displayName)) map[name].displayName = displayName;
+      return map[name];
+    }
+    function addCounter(map, key, amount) {
+      const name = key || "Unknown";
+      map[name] = (map[name] || 0) + amount;
+    }
+    function utilityScore(stats) {
+      return Math.round(stats.damageAssist + stats.preventedDamage);
+    }
+    function damageContribution(stats) {
+      return stats.damage + stats.damageAssist;
+    }
+    function damageBucket(event) {
+      const kind = String(meta(event, "indirect_damage_kind") || "").toLowerCase();
+      if (kind) return kind;
+      const text = `${event.source_type || ""} ${event.source_name || ""} ${meta(event, "power") || ""} ${meta(event, "status") || ""} ${meta(event, "damage_source_type") || ""} ${meta(event, "damage_source_name") || ""} ${meta(event, "damage_source_power") || ""} ${meta(event, "observed_power") || ""}`.toLowerCase();
+      if (text.includes("poison") || text.includes("doom")) return "poison";
+      if (text.includes("otsy") || text.includes("pet") || text.includes("companion")) return "companion";
+      return "direct";
+    }
+    function blockContribution(stats) {
+      return stats.block + stats.preventedDamage + stats.companionBlock;
+    }
+    function estimatePrevented(event, setup) {
+      let observed = num(meta(event, "total_damage"));
+      if (observed <= 0) observed = num(event.amount) + num(meta(event, "blocked_damage"));
+      if (observed <= 0 || !setup) return 0;
+      const ledger = Array.isArray(setup) ? setup : [setup];
+      if (ledger.some(row => String(row.status || "").toLowerCase().includes("weak"))) return Math.max(0, observed / 0.75 - observed);
+      const strengthReduction = ledger
+        .filter(row => String(row.status || "").toLowerCase().includes("strength"))
+        .reduce((sum, row) => sum + Math.abs(num(row.stacks)), 0);
+      if (strengthReduction > 0) return strengthReduction;
+      return 0;
+    }
+    function normalizeCardType(cardType) {
+      const text = String(cardType || "").toLowerCase();
+      return text.includes(".") ? text.split(".").pop() : text;
+    }
+    function isIndirectDamageSource(event) {
+      const sourceType = String(event.source_type || "").toLowerCase();
+      if (sourceType === "poison" || sourceType === "doom") return true;
+      const text = `${meta(event, "power") || ""} ${meta(event, "status") || ""} ${meta(event, "damage_source_type") || ""} ${meta(event, "damage_source_name") || ""} ${meta(event, "damage_source_power") || ""} ${meta(event, "observed_power") || ""}`.toLowerCase();
+      if (!text.includes("poison") && !text.includes("doom")) return false;
+      return !Boolean(meta(event, "card_id") || meta(event, "card_name") || meta(event, "observed_card"));
+    }
+    function isPoisonDamageSource(event) {
+      const sourceType = String(event.source_type || "").toLowerCase();
+      if (sourceType === "poison") return true;
+      const text = `${event.source_type || ""} ${event.source_name || ""} ${meta(event, "power") || ""} ${meta(event, "status") || ""} ${meta(event, "damage_source_type") || ""} ${meta(event, "damage_source_name") || ""} ${meta(event, "damage_source_power") || ""} ${meta(event, "observed_power") || ""}`.toLowerCase();
+      return text.includes("poison") && !text.includes("doom");
+    }
+    function isDoomDamageSource(event) {
+      const sourceType = String(event.source_type || "").toLowerCase();
+      if (sourceType === "doom") return true;
+      const text = `${event.source_type || ""} ${event.source_name || ""} ${meta(event, "power") || ""} ${meta(event, "status") || ""} ${meta(event, "damage_source_type") || ""} ${meta(event, "damage_source_name") || ""} ${meta(event, "damage_source_power") || ""} ${meta(event, "observed_power") || ""}`.toLowerCase();
+      return text.includes("doom");
+    }
+    function isRegentProcSource(source) {
+      const text = String(source || "").replaceAll("_", " ").toLowerCase();
+      return text.includes("stardust") || text.includes("black hole");
+    }
+    function genericPowerProcOwner(event, sourceOwnerByName) {
+      const amount = num(event.amount);
+      if (amount <= 0 || amount > 10 || !isGenericUnownedEnemyDamage(event)) return null;
+      const byPlayer = {};
+      for (const setup of Object.values(sourceOwnerByName)) {
+        if (!setup || !isRegentProcSource(setup.status)) continue;
+        byPlayer[setup.player.key] = setup.player;
+      }
+      const candidates = Object.values(byPlayer);
+      return candidates.length === 1 ? candidates[0] : null;
+    }
+    function isGenericUnownedEnemyDamage(event) {
+      if (!isEnemyTarget(event) && !truthy(meta(event, "observed_is_enemy_target"))) return false;
+      if (truthy(meta(event, "actor_is_player")) || truthy(meta(event, "actor_is_enemy"))) return false;
+      const sourceType = String(event.source_type || "").toLowerCase();
+      if (sourceType !== "combat_history" && sourceType !== "command") return false;
+      if (meta(event, "card_id") || meta(event, "card_name") || meta(event, "observed_card")) return false;
+      const source = String(event.source_name || "").toLowerCase();
+      return source === "block" || source === "attack" || source === "combat_history";
+    }
+    function damageSignature(event) {
+      const target = event.target_id || event.target_name || "";
+      const source = isDefectOrbDamage(event)
+        ? "Lightning/Dark Orb"
+        : (meta(event, "card_id") || event.source_name || "");
+      const sequence = meta(event, "event_sequence") || event.timestamp_ms || 0;
+      return `${target}|${Math.round(num(event.amount) * 100) / 100}|${source}|${meta(event, "observed_method") || ""}|${sequence}`;
+    }
+    function indirectDamageAmount(event) {
+      const amount = num(event.amount);
+      if (amount > 0) return amount;
+      if (!truthy(meta(event, "target_killed"))) return 0;
+      return Math.max(
+        num(meta(event, "total_damage")),
+        num(meta(event, "unblocked_damage")),
+        num(meta(event, "original_damage")),
+        num(meta(event, "lethal_damage"))
+      );
+    }
+    function indirectDamageKind(event) {
+      const text = `${event.source_type || ""} ${event.source_name || ""} ${meta(event, "indirect_damage_kind") || ""} ${meta(event, "power") || ""} ${meta(event, "status") || ""} ${meta(event, "damage_source_type") || ""} ${meta(event, "damage_source_name") || ""} ${meta(event, "companion_name") || ""}`.toLowerCase();
+      if (text.includes("otsy") || text.includes("pet") || text.includes("companion")) return "companion";
+      if (text.includes("doom")) return "doom";
+      return "poison";
+    }
+    function isPromotableObservedDamage(event) {
+      if (event.event_type !== "damage_observed") return false;
+      if (meta(event, "observed_method") !== "MegaCrit.Sts2.Core.Commands.CreatureCmd.Damage") return false;
+      if (!isEnemyTarget(event) && !truthy(meta(event, "observed_is_enemy_target"))) return false;
+      if (isPlayerTarget(event)) return false;
+      const source = `${event.source_type || ""} ${event.source_name || ""} ${meta(event, "power") || ""} ${meta(event, "status") || ""} ${meta(event, "damage_source_type") || ""} ${meta(event, "damage_source_name") || ""} ${meta(event, "damage_source_power") || ""} ${meta(event, "card_id") || ""} ${meta(event, "card_name") || ""} ${meta(event, "observed_card") || ""} ${meta(event, "observed_power") || ""}`.toLowerCase();
+      if (isDefectOrbDamage(event)) return true;
+      if (source.includes("omnislice")) return true;
+      const hasCardSource = Boolean(meta(event, "card_id") || meta(event, "card_name"));
+      if (hasCardSource) return false;
+      if (source.includes("poison") || source.includes("doom")) return true;
+      if (isGenericUnownedEnemyDamage(event)) return true;
+      const sourceType = String(event.source_type || "").toLowerCase();
+      return ["power", "orb", "relic"].includes(sourceType);
+    }
+    function isDefectOrbDamage(event) {
+      const actor = `${meta(event, "actor_model_id") || ""} ${event.actor_name || ""} ${meta(event, "actor_display_name") || ""}`.toLowerCase();
+      const sourceType = String(event.source_type || "").toLowerCase();
+      const sourceName = String(event.source_name || "").toLowerCase();
+      const hasSource = Boolean(meta(event, "card_id") || meta(event, "card_name") || meta(event, "observed_card") || meta(event, "power") || meta(event, "observed_power"));
+      return actor.includes("defect")
+        && !hasSource
+        && (sourceName === "attack" || sourceName === "combat_history" || sourceType === "combat_history");
+    }
+    function displayPlayerName(key, fallback = "") {
+      if (playerAliases[key]) return playerAliases[key];
+      if (fallback && !isPlaceholderDisplayName(fallback)) return fallback;
+      return key;
+    }
+    function isIconName(value) {
+      return /Icon$/i.test(String(value || ""));
+    }
+    function isPlaceholderDisplayName(value) {
+      const text = String(value || "").trim();
+      return !text
+        || text === "Unknown"
+        || /^player:\d+$/i.test(text)
+        || /^\d+$/.test(text)
+        || /^PlayerId\s+\d+$/i.test(text)
+        || isIconName(text);
+    }
+    function sourceName(event) {
+      if (truthy(meta(event, "inferred_card_source")) && meta(event, "card_name")) return String(meta(event, "card_name"));
+      return String(meta(event, "damage_source_name") || meta(event, "damage_source_power") || meta(event, "damage_source_card") || meta(event, "card_name") || event.source_name || event.source || event.card || event.event_type || "Unknown");
+    }
+    function isGenericDamageSource(source) {
+      const text = String(source || "").trim().toLowerCase();
+      return !text || text === "attack" || text === "combat_history" || text === "damage_dealt";
+    }
+    function normalizeSourceKey(value) {
+      let text = String(value || "").trim();
+      if (!text || text === "power" || text === "status" || text === "combat_history") return "";
+      if (text.startsWith("MegaCrit.") || text.startsWith("System.")) return "";
+      const paren = text.indexOf("(");
+      if (paren >= 0) text = text.slice(0, paren).trim();
+      return text;
+    }
+    function shortSourceKey(value) {
+      let text = normalizeSourceKey(value);
+      for (const prefix of ["POWER.", "CARD.", "RELIC.", "ORB."]) {
+        if (text.toUpperCase().startsWith(prefix)) {
+          text = text.slice(prefix.length);
+          break;
+        }
+      }
+      return text.replaceAll("_", " ").trim();
+    }
+    function sourceOwnerKeys(event) {
+      const raw = [
+        event.source_name,
+        meta(event, "source_name"),
+        meta(event, "power"),
+        meta(event, "damage_source_name"),
+        meta(event, "damage_source_id"),
+        meta(event, "damage_source_power"),
+        meta(event, "card_name"),
+        meta(event, "card_id"),
+        meta(event, "observed_card"),
+        meta(event, "observed_power")
+      ];
+      const keys = [];
+      for (const value of raw) {
+        const key = normalizeSourceKey(value);
+        if (!key) continue;
+        keys.push(key);
+        const short = shortSourceKey(key);
+        if (short && short.toLowerCase() !== key.toLowerCase()) keys.push(short);
+      }
+      return [...new Set(keys)];
+    }
+    function displayName(value) {
+      const text = String(value || "").trim();
+      if (isPlaceholderDisplayName(text)) return "";
+      return text;
+    }
+    function legacyPlayerName(event) {
+      const actorId = String(event.actor_player_id || "");
+      const members = Object.entries(event.metadata || {})
+        .filter(([key, value]) => key.endsWith("_members") && value && typeof value === "object")
+        .map(([, value]) => value);
+      const matching = members.find(value =>
+        String(value.IsPlayer).toLowerCase() === "true"
+        && String(value.Side || "").toLowerCase() === "player"
+        && actorId
+        && String(value.CombatId || "") === actorId
+        && displayName(value.Name)
+      );
+      if (matching) return displayName(matching.Name);
+      const anyPlayer = members.find(value =>
+        String(value.IsPlayer).toLowerCase() === "true"
+        && String(value.Side || "").toLowerCase() === "player"
+        && displayName(value.Name)
+      );
+      return anyPlayer ? displayName(anyPlayer.Name) : "";
+    }
+    function actorName(event) {
+      return displayName(meta(event, "actor_display_name"))
+        || displayName(event.actor_name)
+        || legacyPlayerName(event)
+        || displayName(event.player)
+        || String(event.actor_player_id || "Unknown");
+    }
+    function actorIdentity(event) {
+      const key = event.actor_player_id ? `player:${event.actor_player_id}` : actorName(event);
+      return { key, name: actorName(event) };
+    }
+    function addLedgerEntry(ledgerMap, targetKey, actor, status, stacks) {
+      if (!targetKey) return;
+      if (!ledgerMap[targetKey]) ledgerMap[targetKey] = [];
+      const amount = Math.max(1, Math.abs(num(stacks) || 1));
+      const existing = ledgerMap[targetKey].find(row => row.player.key === actor.key && row.status === status);
+      if (existing) {
+        existing.player = actor;
+        existing.stacks += amount;
+      } else {
+        ledgerMap[targetKey].push({ player: actor, status, stacks: amount });
+      }
+    }
+    function addVulnerableLedgerEntry(ledgerMap, targetKey, actor, status, stacks, appliedTurn) {
+      addTimedLedgerEntry(ledgerMap, targetKey, actor, status, stacks, appliedTurn);
+    }
+    function addTimedLedgerEntry(ledgerMap, targetKey, actor, status, stacks, appliedTurn) {
+      if (!targetKey) return;
+      if (!ledgerMap[targetKey]) ledgerMap[targetKey] = [];
+      const amount = Math.max(1, Math.abs(num(stacks) || 1));
+      ledgerMap[targetKey].push({ player: actor, status, stacks: amount, appliedTurn: appliedTurn == null ? null : num(appliedTurn) });
+    }
+    function splitCredit(ledger, amount, apply) {
+      const rows = (Array.isArray(ledger) ? ledger : [ledger]).filter(row => row && num(row.stacks) > 0);
+      const total = rows.reduce((sum, row) => sum + num(row.stacks), 0);
+      if (amount <= 0 || total <= 0) return false;
+      for (const row of rows) apply(row.player, amount * num(row.stacks) / total);
+      return true;
+    }
+    function isWeakStatus(status) {
+      return String(status || "").toLowerCase().includes("weak");
+    }
+    function isPoisonStatus(status) {
+      return String(status || "").toLowerCase().includes("poison");
+    }
+    function isDoomStatus(status) {
+      return String(status || "").toLowerCase().includes("doom");
+    }
+    function isVulnerableStatus(status) {
+      return String(status || "").toLowerCase() === "vulnerable";
+    }
+    function isDamageAmplifierStatus(status) {
+      const text = String(status || "").toLowerCase();
+      return text === "vulnerable" || text.includes("debilitate");
+    }
+    function isDebilitateEvent(event) {
+      const text = `${event.source_type || ""} ${event.source_name || ""} ${meta(event, "power") || ""} ${meta(event, "status") || ""} ${meta(event, "card_id") || ""} ${meta(event, "card_name") || ""} ${meta(event, "observed_card") || ""}`.toLowerCase();
+      return text.includes("debilitate");
+    }
+    function timedWindows(ledger, currentTurn, predicate) {
+      const rows = (Array.isArray(ledger) ? ledger : [ledger]).filter(row => row && num(row.stacks) > 0 && predicate(row.status));
+      let cursor = rows
+        .filter(row => row.appliedTurn != null)
+        .reduce((min, row) => Math.min(min, num(row.appliedTurn)), currentTurn);
+      return rows.map((row, index) => {
+        const start = Math.max(cursor, row.appliedTurn == null ? cursor : num(row.appliedTurn));
+        const end = start + Math.max(1, Math.ceil(num(row.stacks)));
+        cursor = Math.max(cursor, end);
+        return { row, index, start, end };
+      });
+    }
+    function consumeOldestTimedUse(ledgerMap, targetKey, predicate) {
+      const ledger = (ledgerMap[targetKey] || []).filter(row => row && (num(row.stacks) > 0 || !predicate(row.status)));
+      if (!ledger.length) {
+        ledgerMap[targetKey] = [];
+        return;
+      }
+      const oldest = ledger.find(row => row && predicate(row.status) && num(row.stacks) > 0);
+      if (!oldest) {
+        ledgerMap[targetKey] = ledger;
+        return;
+      }
+      oldest.stacks = num(oldest.stacks) - 1;
+      ledgerMap[targetKey] = ledger.filter(row => num(row.stacks) > 0.001);
+    }
+    function advanceTimedLedger(ledgerMap, targetKey, currentTurn, predicate) {
+      const ledger = ledgerMap[targetKey] || [];
+      if (currentTurn == null || !ledger.some(row => row.appliedTurn != null && predicate(row.status))) {
+        consumeOldestTimedUse(ledgerMap, targetKey, predicate);
+        return;
+      }
+      const expired = new Set(timedWindows(ledger, num(currentTurn), predicate)
+        .filter(window => num(currentTurn) >= window.end)
+        .map(window => window.row));
+      ledgerMap[targetKey] = ledger.filter(row => !expired.has(row));
+    }
+    function splitTimedCredit(ledgerMap, targetKey, amount, currentTurn, predicate, apply) {
+      const ledger = ledgerMap[targetKey];
+      if (amount <= 0 || !ledger) return false;
+      if (currentTurn != null && ledger.some(row => row && row.appliedTurn != null && predicate(row.status))) {
+        const active = timedWindows(ledger, num(currentTurn), predicate).find(window => num(currentTurn) >= window.start && num(currentTurn) < window.end);
+        if (!active) {
+          advanceTimedLedger(ledgerMap, targetKey, currentTurn, predicate);
+          return false;
+        }
+        apply(active.row.player, amount);
+        advanceTimedLedger(ledgerMap, targetKey, currentTurn, predicate);
+        return true;
+      }
+
+      const rows = (Array.isArray(ledger) ? ledger : [ledger]).filter(row => row && num(row.stacks) > 0 && predicate(row.status));
+      if (!rows.length) {
+        return false;
+      }
+      apply(rows[0].player, amount);
+      rows[0].stacks = num(rows[0].stacks) - 1;
+      ledgerMap[targetKey] = ledger.filter(row => num(row.stacks) > 0.001);
+      return true;
+    }
+    function splitVulnerableCredit(ledgerMap, targetKey, amount, currentTurn, apply) {
+      return splitTimedCredit(ledgerMap, targetKey, amount, null, isDamageAmplifierStatus, apply);
+    }
+    function splitPoisonDamageAndDecay(ledgerMap, targetKey, amount, apply) {
+      const ledger = ledgerMap[targetKey] || [];
+      const rows = ledger.filter(row => row && num(row.stacks) > 0 && isPoisonStatus(row.status));
+      const total = rows.reduce((sum, row) => sum + num(row.stacks), 0);
+      if (amount <= 0 || total <= 0) {
+        ledgerMap[targetKey] = ledger.filter(row => num(row.stacks) > 0.001);
+        return false;
+      }
+      for (const row of rows) apply(row.player, amount * num(row.stacks) / total);
+      for (const row of ledger) {
+        if (isPoisonStatus(row.status)) row.stacks = num(row.stacks) - 1;
+      }
+      ledgerMap[targetKey] = ledger.filter(row => !isPoisonStatus(row.status) || num(row.stacks) > 0.001);
+      return true;
+    }
+    function splitStatusDamage(ledger, amount, predicate, apply) {
+      const rows = (Array.isArray(ledger) ? ledger : [ledger]).filter(row => row && num(row.stacks) > 0 && predicate(row.status));
+      const total = rows.reduce((sum, row) => sum + num(row.stacks), 0);
+      if (amount <= 0 || total <= 0) return false;
+      for (const row of rows) apply(row.player, amount * num(row.stacks) / total);
+      return true;
+    }
+    function cleanEntityText(value) {
+      return String(value || "")
+        .replace(/^Creature\s+/i, "")
+        .replace(/\s*\(\d+\)\s*$/g, "")
+        .trim();
+    }
+    function simplifyPower(value) {
+      let text = String(value || "").trim();
+      const match = text.match(/POWER\.([A-Z0-9_]+)/i);
+      if (match) text = match[1];
+      text = text.replace(/_POWER$/i, "").replaceAll("_", " ").toLowerCase().trim();
+      return text;
+    }
+    function repairLegacyPowerEvent(event) {
+      const argPower = meta(event, "arg_1");
+      if (!String(argPower || "").startsWith("POWER.")) return;
+      const status = simplifyPower(argPower);
+      if (!status) return;
+
+      const target = cleanEntityText(meta(event, "arg_2"));
+      const stacks = num(meta(event, "arg_3"));
+      const applier = cleanEntityText(meta(event, "arg_4"));
+      const card = cleanEntityText(meta(event, "arg_5"));
+      event.amount = stacks || event.amount || 1;
+      event.base_amount = event.amount;
+      event.source_name = card && card.startsWith("CARD.") ? card : (applier || event.source_name);
+      event.actor_name = applier || event.actor_name;
+      event.target_name = target || event.target_name;
+      event.metadata.status = status;
+      event.metadata.power = status;
+      event.metadata.power_id = String(argPower).split(" ")[0];
+      if (card && card.startsWith("CARD.")) {
+        event.metadata.card_id = card.split(" ")[0];
+        event.metadata.card_name = shortSourceKey(card.split(" ")[0]);
+      }
+      if (target) {
+        const targetIsPlayer = /silent|ironclad|defect|watcher|necrobinder/i.test(target);
+        event.metadata.target_is_player = targetIsPlayer;
+        event.metadata.target_is_enemy = !targetIsPlayer;
+        event.metadata.target_display_name = target;
+      }
+      if (applier) {
+        event.metadata.actor_display_name = applier;
+        event.metadata.actor_is_player = /silent|ironclad|defect|watcher|necrobinder/i.test(applier);
+      }
+    }
+    function normalize(raw) {
+      const event = { ...raw };
+      event.event_type = String(event.event_type || event.type || event.event || "").toLowerCase();
+      event.actor_name = event.actor_name || event.player || event.actor;
+      event.target_name = event.target_name || event.target;
+      event.amount = num(event.amount);
+      event.base_amount = event.base_amount == null ? event.amount : num(event.base_amount);
+      event.timestamp_ms = num(event.timestamp_ms);
+      event.metadata = event.metadata && typeof event.metadata === "object" ? event.metadata : {};
+      repairLegacyPowerEvent(event);
+      return event;
+    }
+    function parseLog(text, name) {
+      if (name.endsWith(".jsonl")) {
+        return text.split(/\r?\n/).filter(Boolean).map(line => normalize(JSON.parse(line)));
+      }
+      const data = JSON.parse(text);
+      if (Array.isArray(data)) return data.map(normalize);
+      return (data.events || []).map(normalize);
+    }
+    function analyze(events) {
+      const players = {};
+      const enemyDamage = {};
+      const timeline = [];
+      const vulnerableByTarget = {};
+      const reductionBySource = {};
+      const indirectDamageByTarget = {};
+      const sourceOwnerByName = {};
+      const recentCardByActor = {};
+      const recentPromotedDamage = new Set();
+      const recentPromotedDamageOrder = [];
+      const runId = events[0]?.run_id || "local-run";
+      const playerKeyByName = {};
+      for (const event of events) {
+        if (!event.actor_player_id) continue;
+        const name = actorName(event);
+        if (isCompanionName(name) || isCompanionName(meta(event, "actor_display_name"))) continue;
+        if (!isPlaceholderDisplayName(name)) playerKeyByName[name.toLowerCase()] = `player:${event.actor_player_id}`;
+      }
+
+      for (const event of events) {
+        const type = event.event_type;
+        const amount = num(event.amount);
+        const base = event.base_amount || amount;
+        let actor = actorIdentity(event);
+        if (!event.actor_player_id && playerKeyByName[actor.name.toLowerCase()]) {
+          actor = { key: playerKeyByName[actor.name.toLowerCase()], name: actor.name };
+        }
+        let source = sourceName(event);
+        const countsAsDamage = type === "damage_dealt" || isPromotableObservedDamage(event);
+        if (type === "damage_observed" && countsAsDamage) {
+          const signature = damageSignature(event);
+          if (recentPromotedDamage.has(signature)) continue;
+          recentPromotedDamage.add(signature);
+          recentPromotedDamageOrder.push(signature);
+          while (recentPromotedDamageOrder.length > 48) recentPromotedDamage.delete(recentPromotedDamageOrder.shift());
+          if (isDefectOrbDamage(event)) source = "Lightning/Dark Orb";
+        }
+
+        if ((type === "healing_done" || type === "heal") && truthy(meta(event, "initial_heal"))) continue;
+
+        if (countsAsDamage && isEnemyActor(event)) addCounter(enemyDamage, actor.name, amount);
+        if (countsAsDamage && isPlayerTarget(event)) continue;
+        if (!isPlayerActor(event)) {
+          const targetKey = event.target_id || event.target_name;
+          const setup = indirectDamageByTarget[targetKey];
+          if (!countsAsDamage) continue;
+          const sourceSetup = sourceOwnerKeys(event).map(key => sourceOwnerByName[key]).find(Boolean);
+          if (sourceSetup && !isIndirectDamageSource(event)) {
+            actor = sourceSetup.player;
+          } else if (setup && (isIndirectDamageSource(event) || isGenericUnownedEnemyDamage(event))) {
+            const creditedAmount = indirectDamageAmount(event);
+            const splitIndirect = isPoisonDamageSource(event)
+              ? (handler) => splitPoisonDamageAndDecay(indirectDamageByTarget, targetKey, creditedAmount, handler)
+              : isDoomDamageSource(event)
+                ? (handler) => splitStatusDamage(setup, creditedAmount, isDoomStatus, handler)
+              : (handler) => splitCredit(setup, creditedAmount, handler);
+            splitIndirect((player, credit) => {
+              const s = ensure(players, player.key, player.name);
+              s.damage += credit;
+              const bucket = indirectDamageKind(event);
+              if (bucket === "companion") s.companionDamage += credit;
+              else s.poisonDamage += credit;
+              addCounter(s.sources, source, credit);
+            });
+            timeline.push({ actorKey: "poison-ledger", actor: "Poison/Doom ledger", type, source, target: event.target_name || "", amount: creditedAmount, time: event.timestamp_ms });
+            continue;
+          } else {
+            if (sourceSetup) {
+              actor = sourceSetup.player;
+            } else {
+              const procOwner = genericPowerProcOwner(event, sourceOwnerByName);
+              if (!procOwner) continue;
+              actor = procOwner;
+            }
+          }
+        }
+
+        const stats = ensure(players, actor.key, actor.name);
+        if (countsAsDamage) {
+          if (isGenericDamageSource(source) && (isEnemyTarget(event) || !isPlayerTarget(event)) && recentCardByActor[actor.key]) {
+            source = recentCardByActor[actor.key].source;
+          }
+          const bonus = Math.max(0, amount - base);
+          const bucket = damageBucket(event);
+          stats.damage += amount;
+          if (bucket === "poison" || bucket === "doom") stats.poisonDamage += amount;
+          else if (bucket === "companion") stats.companionDamage += amount;
+          else stats.direct += Math.max(0, amount - bonus);
+          addCounter(stats.sources, source, amount);
+          const targetKey = event.target_id || event.target_name;
+          if (targetKey && vulnerableByTarget[targetKey]) {
+            const utilityBonus = bonus > 0 ? bonus : Math.max(0, amount - amount / 1.5);
+            if (utilityBonus > 0) {
+              splitVulnerableCredit(vulnerableByTarget, targetKey, utilityBonus, event.turn, (player, credit) => {
+                const helper = ensure(players, player.key, player.name);
+                helper.damageAssist += credit;
+                helper.utilityDamage += credit;
+              });
+            }
+          }
+        } else if (type === "block_gained" || type === "block") {
+          stats.block += amount;
+          addCounter(stats.sources, source, amount);
+        } else if (type === "damage_taken" || type === "hp_lost") {
+          stats.taken += amount;
+          const blocked = num(meta(event, "blocked_damage"));
+          stats.damageBlocked += blocked;
+          if (truthy(meta(event, "pet_damage_absorbed"))) stats.companionBlock += blocked;
+          const sourceKey = event.target_id || event.target_name;
+          let prevented = num(meta(event, "prevented_damage"));
+          const setup = reductionBySource[sourceKey];
+          if (prevented <= 0) prevented = estimatePrevented(event, setup);
+          if (sourceKey && prevented > 0 && setup) {
+            const hasWeak = (Array.isArray(setup) ? setup : [setup]).some(row => row && isWeakStatus(row.status));
+            const splitter = hasWeak
+              ? (handler) => splitTimedCredit(reductionBySource, sourceKey, prevented, event.turn, isWeakStatus, handler)
+              : (handler) => splitCredit(setup, prevented, handler);
+            splitter((player, credit) => {
+              const reducer = ensure(players, player.key, player.name);
+              reducer.preventedDamage += credit;
+              reducer.utilityDamage += credit;
+            });
+          }
+        } else if (type === "healing_done" || type === "heal") {
+          stats.healing += amount;
+        } else if (type === "card_played") {
+          if (source && !isGenericDamageSource(source)) recentCardByActor[actor.key] = { source, time: event.timestamp_ms };
+          stats.cards += 1;
+          stats.energy += num(meta(event, "energy_spent"));
+          const cardType = normalizeCardType(meta(event, "card_type"));
+          if (cardType === "attack") stats.attacks += 1;
+          else if (cardType === "skill") stats.skills += 1;
+          else if (cardType === "power") {
+            stats.powers += 1;
+            const ownerStatus = source && !isGenericDamageSource(source) ? source : (sourceOwnerKeys(event)[0] || "power");
+            for (const key of sourceOwnerKeys(event)) sourceOwnerByName[key] = { player: actor, status: ownerStatus, stacks: 1 };
+            if (source && !isGenericDamageSource(source)) {
+              sourceOwnerByName[source] = { player: actor, status: source, stacks: 1 };
+              sourceOwnerByName[shortSourceKey(source)] = { player: actor, status: source, stacks: 1 };
+            }
+          }
+          addCounter(stats.sources, source, 1);
+        } else if (type === "debuff_applied" || type === "buff_applied" || type === "power_applied") {
+          const status = String(meta(event, "status") || type.replace("_applied", "")).toLowerCase();
+          stats.statuses[status] = (stats.statuses[status] || 0) + Math.max(1, amount);
+          const targetKey = event.target_id || event.target_name;
+          if ((isDamageAmplifierStatus(status) || isDebilitateEvent(event)) && targetKey) {
+            addVulnerableLedgerEntry(vulnerableByTarget, targetKey, actor, isDebilitateEvent(event) ? "debilitate" : status, amount || 1, event.turn);
+          }
+          if (status.includes("poison") && targetKey) {
+            addLedgerEntry(indirectDamageByTarget, targetKey, actor, status, amount || 1);
+          } else if (status.includes("doom") && targetKey) {
+            addLedgerEntry(indirectDamageByTarget, targetKey, actor, status, amount || 1);
+          }
+          for (const key of sourceOwnerKeys(event)) {
+            sourceOwnerByName[key] = { player: actor, status, stacks: amount || 1 };
+          }
+          if (status.includes("weak") && targetKey) {
+            addTimedLedgerEntry(reductionBySource, targetKey, actor, status, Math.abs(amount || 1), event.turn);
+          } else if ((status.includes("strength_down") || status.includes("damage_decrease") || (status.includes("strength") && amount < 0)) && targetKey) {
+            addLedgerEntry(reductionBySource, targetKey, actor, status, Math.abs(amount || 1));
+          }
+        } else if (type === "card_drawn") {
+          stats.utilityEvents += 1;
+        } else if (type === "energy_gained") {
+          stats.utilityEvents += 1;
+        } else if (["potion_used", "relic_triggered", "utility"].includes(type)) {
+          stats.utilityEvents += 1;
+        }
+
+        timeline.push({ actorKey: actor.key, actor: actor.name, type, source, target: event.target_name || "", amount, time: event.timestamp_ms });
+      }
+
+      return { runId, events, players, enemyDamage, timeline };
+    }
+    function rank(players, metric) {
+      return Object.entries(players)
+        .filter(([playerKey, stats]) => !isCompanionName(playerKey) && !isCompanionName(stats.displayName))
+        .map(([playerKey, stats]) => ({
+          key: playerKey,
+          name: playerAliases[playerKey] || stats.displayName || playerKey,
+          primary: metric === "block" ? stats.block : (stats.direct || stats.poisonDamage || stats.companionDamage ? stats.direct : stats.damage),
+          assist: metric === "block" ? stats.preventedDamage : stats.damageAssist,
+          poison: metric === "block" ? 0 : stats.poisonDamage,
+          companion: metric === "block" ? stats.companionBlock : stats.companionDamage,
+          value: metric === "block" ? blockContribution(stats) : damageContribution(stats)
+        }))
+        .sort((a, b) => b.value - a.value);
+    }
+    function bar(row, max) {
+      const value = typeof row === "number" ? row : row.value;
+      const primary = typeof row === "number" ? row : row.primary;
+      const assist = typeof row === "number" ? 0 : row.assist;
+      const poison = typeof row === "number" ? 0 : row.poison;
+      const companion = typeof row === "number" ? 0 : row.companion;
+      const width = max <= 0 ? 0 : Math.max(4, Math.round(value / max * 100));
+      const primaryWidth = value <= 0 ? 0 : Math.round(primary / value * width);
+      const assistWidth = value <= 0 ? 0 : Math.round(assist / value * width);
+      const poisonWidth = value <= 0 ? 0 : Math.round(poison / value * width);
+      const companionWidth = Math.max(0, width - primaryWidth - assistWidth - poisonWidth);
+      const companionLabel = poison > 0 ? "Otsy Damage" : "Otsy Block";
+      return `<span class="bar"><span class="bar-main" style="width:${primaryWidth}%" title="Direct ${Math.round(primary)}"></span><span class="bar-assist" style="width:${assistWidth}%" title="Utility ${Math.round(assist)}"></span><span class="bar-poison" style="width:${poisonWidth}%" title="Poison/Doom ${Math.round(poison)}"></span><span class="bar-companion" style="width:${companionWidth}%" title="${companionLabel} ${Math.round(companion)}"></span></span>`;
+    }
+    function board(title, rows) {
+      const top = rows.slice(0, 5);
+      const max = Math.max(0, ...top.map(row => row.value));
+      const body = top.length
+        ? top.map((row, i) => `<tr><td class="rank">${i + 1}</td><td>${esc(row.name)}</td><td>${bar(row, max)}</td><td class="num">${Math.round(row.value)}</td></tr>`).join("")
+        : `<tr><td colspan="4" class="muted">No data yet</td></tr>`;
+      return `<section class="panel board"><h2>${esc(title)}</h2><table>${body}</table></section>`;
+    }
+    function topSource(stats) {
+      const row = Object.entries(stats.sources).sort((a, b) => b[1] - a[1])[0];
+      return row ? `${esc(row[0])} (${Math.round(row[1])})` : "None";
+    }
+    function render(analysis) {
+      latestAnalysis = analysis;
+      const players = analysis.players;
+      const playerValues = Object.values(players);
+      const totalDamage = playerValues.reduce((sum, s) => sum + damageContribution(s), 0);
+      const totalBlock = playerValues.reduce((sum, s) => sum + blockContribution(s), 0);
+      const totalUtility = playerValues.reduce((sum, s) => sum + utilityScore(s), 0);
+      const totalTaken = playerValues.reduce((sum, s) => sum + s.taken, 0);
+      const totalHealing = playerValues.reduce((sum, s) => sum + s.healing, 0);
+      const generated = new Date().toLocaleString();
+
+      const playerRows = Object.keys(players).sort((a, b) => {
+        const aName = playerAliases[a] || players[a].displayName || a;
+        const bName = playerAliases[b] || players[b].displayName || b;
+        return aName.localeCompare(bName);
+      }).filter(playerKey => !isCompanionName(playerKey) && !isCompanionName(players[playerKey].displayName)).map(playerKey => {
+        const s = players[playerKey];
+        const shownName = displayPlayerName(playerKey, s.displayName);
+        return `<tr><td class="player"><input class="name-input" data-player="${esc(playerKey)}" value="${esc(shownName)}"></td><td class="num">${Math.round(damageContribution(s))}</td><td class="num">${Math.round(s.damage)}</td><td class="num">${Math.round(s.damageAssist)}</td><td class="num">${Math.round(s.poisonDamage)}</td><td class="num">${Math.round(s.companionDamage)}</td><td class="num">${Math.round(blockContribution(s))}</td><td class="num">${Math.round(s.block)}</td><td class="num">${Math.round(s.preventedDamage)}</td><td class="num">${Math.round(s.companionBlock)}</td><td class="num">${Math.round(s.taken)}</td><td class="num">${s.cards}</td><td class="num">${s.attacks}/${s.skills}/${s.powers}</td><td>${topSource(s)}</td></tr>`;
+      }).join("") || `<tr><td colspan="14" class="muted">No player combat events found.</td></tr>`;
+
+      const enemyRows = Object.entries(analysis.enemyDamage).sort((a, b) => b[1] - a[1]).slice(0, 8)
+        .map(([name, value]) => `<tr><td>${esc(name)}</td><td class="num">${Math.round(value)}</td></tr>`).join("")
+        || `<tr><td colspan="2" class="muted">No enemy damage captured yet.</td></tr>`;
+
+      const timelineRows = analysis.timeline.sort((a, b) => b.time - a.time).slice(0, 24).map(event => {
+        const detail = `${event.source}${event.target ? ` -> ${event.target}` : ""}`;
+        return `<tr><td>${esc(displayPlayerName(event.actorKey, event.actor))}</td><td>${esc(event.type)}</td><td>${esc(detail)}</td><td class="num">${Math.round(event.amount)}</td></tr>`;
+      }).join("");
+
+      latestReport = `
+        <section>
+          <div class="muted">Run ${esc(analysis.runId)} · generated ${esc(generated)} · ${analysis.events.length} events parsed</div>
+        </section>
+        <section class="grid cards section">
+          <div class="metric"><h3>Damage</h3><strong>${Math.round(totalDamage)}</strong></div>
+          <div class="metric"><h3>Support</h3><strong>${Math.round(totalBlock)}</strong></div>
+          <div class="metric"><h3>Utility</h3><strong>${Math.round(totalUtility)}</strong></div>
+          <div class="metric"><h3>Damage Taken</h3><strong>${Math.round(totalTaken)}</strong></div>
+          <div class="metric"><h3>Healing</h3><strong>${Math.round(totalHealing)}</strong></div>
+        </section>
+        <section class="grid boards">
+          ${board("Damage", rank(players, "damage"))}
+          ${board("Support", rank(players, "block"))}
+        </section>
+        <section class="panel section">
+          <h2>Player Breakdown</h2>
+          <table><thead><tr><th>Player</th><th class="num">Damage Total</th><th class="num">Raw Dmg</th><th class="num">Dmg Assist</th><th class="num">Poison/Doom</th><th class="num">Otsy Dmg</th><th class="num">Block Total</th><th class="num">Block</th><th class="num">Prevented</th><th class="num">Otsy Block</th><th class="num">Taken</th><th class="num">Cards</th><th class="num">Atk/Skill/Power</th><th>Top Source</th></tr></thead><tbody>${playerRows}</tbody></table>
+          <div class="note">Damage Total = raw damage + damage utility. Damage bars split direct, utility, poison/Doom, and Otsy/companion damage. Block Total = direct block + prevented damage + damage absorbed by Otsy.</div>
+        </section>
+        <section class="grid two">
+          <section class="panel"><h2>Enemy Damage Captured</h2><table><thead><tr><th>Creature</th><th class="num">Damage</th></tr></thead><tbody>${enemyRows}</tbody></table></section>
+          <section class="panel"><h2>Recent Player Events</h2><table><thead><tr><th>Player</th><th>Type</th><th>Detail</th><th class="num">Amount</th></tr></thead><tbody>${timelineRows}</tbody></table></section>
+        </section>`;
+
+      document.getElementById("drop").classList.add("hidden");
+      const report = document.getElementById("report");
+      report.classList.remove("hidden");
+      report.innerHTML = latestReport;
+      report.querySelectorAll(".name-input").forEach(input => {
+        input.addEventListener("change", () => {
+          const original = input.getAttribute("data-player");
+          if (original && input.value.trim()) {
+            playerAliases[original] = input.value.trim();
+            render(latestAnalysis);
+          }
+        });
+      });
+      document.getElementById("exportButton").disabled = false;
+    }
+    async function loadFile(file) {
+      const events = parseLog(await file.text(), file.name.toLowerCase());
+      render(analyze(events));
+    }
+    document.getElementById("fileInput").addEventListener("change", event => {
+      const file = event.target.files[0];
+      if (file) loadFile(file).catch(error => alert(error.message));
+    });
+    document.getElementById("sampleButton").addEventListener("click", () => render(analyze(sampleEvents.map(normalize))));
+    document.getElementById("exportButton").addEventListener("click", () => {
+      const html = `<!doctype html><html><head><meta charset="utf-8"><title>NeowLogs Report</title>${document.querySelector("style").outerHTML}</head><body><header><div><h1>NeowLogs</h1><p class="muted">Exported local report</p></div></header><main>${latestReport}</main></body></html>`;
+      const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+      const link = Object.assign(document.createElement("a"), { href: url, download: "neowlogs-report.html" });
+      link.click();
+      URL.revokeObjectURL(url);
+    });
+    const drop = document.getElementById("drop");
+    ["dragenter", "dragover"].forEach(type => drop.addEventListener(type, event => {
+      event.preventDefault();
+      drop.classList.add("dragging");
+    }));
+    ["dragleave", "drop"].forEach(type => drop.addEventListener(type, event => {
+      event.preventDefault();
+      drop.classList.remove("dragging");
+    }));
+    drop.addEventListener("drop", event => {
+      const file = event.dataTransfer.files[0];
+      if (file) loadFile(file).catch(error => alert(error.message));
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+<Project>
+  <PropertyGroup Condition="'$(Sts2InstallDir)' == '' and Exists('C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2')">
+    <Sts2InstallDir>C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2</Sts2InstallDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Sts2InstallDir)' == '' and Exists('C:\Program Files\Steam\steamapps\common\Slay the Spire 2')">
+    <Sts2InstallDir>C:\Program Files\Steam\steamapps\common\Slay the Spire 2</Sts2InstallDir>
+  </PropertyGroup>
+  <PropertyGroup>
+    <Sts2DataDir>$(Sts2InstallDir)\data_sts2_windows_x86_64</Sts2DataDir>
+    <ModsPath>$(Sts2InstallDir)\mods\</ModsPath>
+  </PropertyGroup>
+</Project>
+
