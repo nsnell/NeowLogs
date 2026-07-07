@@ -53,6 +53,10 @@ public static class EventTap
         {
             return;
         }
+        if (TryRecordHook(originalMethod, args, eventType))
+        {
+            return;
+        }
         RecordFromCommand(originalMethod, instance, args, eventType);
     }
 
@@ -592,61 +596,88 @@ public static class EventTap
             case "CardPlayFinished":
                 RecordCardPlay(args, metadata, "card_play_finished");
                 return true;
-            case "CreatureDied":
-            case "CreatureKilled":
-            case "Died":
-            case "OnCreatureDied":
-            case "CreatureDefeated":
-                RecordCreatureDied(args, metadata);
+        }
+
+        return false;
+    }
+
+    private static bool TryRecordHook(MethodBase originalMethod, object[] args, string? eventType)
+    {
+        if (originalMethod.DeclaringType?.FullName != "MegaCrit.Sts2.Core.Hooks.Hook")
+        {
+            return false;
+        }
+
+        switch (originalMethod.Name)
+        {
+            case "AfterDiedToDoom":
+                RecordDoomDeaths(args);
                 return true;
         }
 
         return false;
     }
 
-    private static void RecordCreatureDied(object[] args, Dictionary<string, object?> metadata)
+    // Hook.AfterDiedToDoom(ICombatState combatState, IReadOnlyList<Creature> creatures) is the
+    // real doom-death signal. Emit a creature_died event per victim carrying resolved doom
+    // credit split across the per-target doom ledger (which we populate from each player's doom
+    // application, since the game merges doom into one PowerModel with a single Applier).
+    private static void RecordDoomDeaths(object[] args)
     {
-        var victim = FirstCreature(args.Skip(1)) ?? FirstCreature(args.AsEnumerable());
-        if (victim == null)
+        var combatState = args.Length > 0 ? args[0] : null;
+        ResetPerCombatCaches(NeowLogsMod.Recorder.CombatId);
+        var turn = TryReadTurn(combatState);
+
+        var victims = args.Length > 1 ? Enumerate(args[1]).ToArray() : [];
+        foreach (var value in victims)
         {
-            return;
+            var victim = FirstCreature(value);
+            if (victim == null)
+            {
+                continue;
+            }
+
+            var targetKey = CreatureId(victim) ?? CreatureName(victim);
+            var hpAtDeath = NumberMember(victim, "CurrentHp") ?? 0;
+            var maxHp = NumberMember(victim, "MaxHp") ?? 0;
+            var doomStacks = ReadStatusStacks(victim, "doom");
+
+            var metadata = new Dictionary<string, object?>
+            {
+                ["history_method"] = "AfterDiedToDoom",
+                ["indirect_damage_kind"] = "doom",
+                ["target_killed"] = true,
+                ["hp_at_death"] = hpAtDeath,
+                ["max_hp"] = maxHp
+            };
+            if (turn.HasValue)
+            {
+                metadata["turn"] = turn.Value;
+                _lastKnownTurn = turn.Value;
+            }
+            if (doomStacks.HasValue)
+            {
+                metadata["doom_stacks_at_death"] = doomStacks.Value;
+            }
+            AddCreatureMetadata(metadata, "target", victim);
+
+            // HP is typically already spent by the time this fires; ResolveDoomCredit treats a
+            // non-positive kill amount as "credit the full doom applied", split proportionally.
+            var killAmount = hpAtDeath > 0 ? hpAtDeath : (doomStacks ?? 0);
+            if (!TryEmitDoomCredit(metadata, targetKey, killAmount))
+            {
+                NeowLogsMod.Logger.Warn($"NeowLogs doom death for '{CreatureName(victim)}' (id {targetKey}) had no doom ledger entries — check that doom application is captured as debuff_applied/power_applied.");
+            }
+
+            NeowLogsMod.Recorder.Record(
+                "creature_died",
+                targetId: CreatureId(victim),
+                targetName: CreatureName(victim),
+                amount: killAmount,
+                sourceType: "doom",
+                sourceName: "doom",
+                metadata: metadata);
         }
-
-        var hpAtDeath = NumberMember(victim, "CurrentHp") ?? 0;
-        var maxHp = NumberMember(victim, "MaxHp") ?? 0;
-        AddCreatureMetadata(metadata, "target", victim);
-        metadata["hp_at_death"] = hpAtDeath;
-        metadata["max_hp"] = maxHp;
-
-        // Fix 4.2: capture status stacks straight off the corpse so "did this die to doom"
-        // is a structured check instead of string sniffing the source.
-        var doomStacks = ReadStatusStacks(victim, "doom");
-        if (doomStacks.HasValue)
-        {
-            metadata["doom_stacks_at_death"] = doomStacks.Value;
-        }
-
-        var poisonStacks = ReadStatusStacks(victim, "poison");
-        if (poisonStacks.HasValue)
-        {
-            metadata["poison_stacks_at_death"] = poisonStacks.Value;
-        }
-
-        // Fix 5 (#3): the death hook is the reliable place to resolve doom credit, since the
-        // doom stacks are read straight off the corpse rather than sniffed from source text.
-        if (doomStacks is > 0)
-        {
-            TryEmitDoomCredit(metadata, CreatureId(victim) ?? CreatureName(victim), hpAtDeath > 0 ? hpAtDeath : doomStacks.Value);
-        }
-
-        NeowLogsMod.Recorder.Record(
-            "creature_died",
-            targetId: CreatureId(victim),
-            targetName: CreatureName(victim),
-            amount: hpAtDeath > 0 ? hpAtDeath : maxHp,
-            sourceType: "combat_history",
-            sourceName: "CreatureDied",
-            metadata: metadata);
     }
 
     private static double? ReadStatusStacks(object? creature, string statusSubstring)
@@ -776,17 +807,17 @@ public static class EventTap
         DoomCreditEmitted.Clear();
     }
 
-    private static void TryEmitDoomCredit(Dictionary<string, object?> metadata, string? targetKey, double killAmount)
+    private static bool TryEmitDoomCredit(Dictionary<string, object?> metadata, string? targetKey, double killAmount)
     {
         if (string.IsNullOrWhiteSpace(targetKey) || DoomCreditEmitted.Contains(targetKey))
         {
-            return;
+            return false;
         }
 
         var credit = NeowLogsMod.Stats.ResolveDoomCredit(targetKey, killAmount);
         if (credit.Count == 0)
         {
-            return;
+            return false;
         }
 
         DoomCreditEmitted.Add(targetKey);
@@ -803,6 +834,7 @@ public static class EventTap
         }
 
         metadata["doom_kill_credit"] = rows;
+        return true;
     }
 
     private static void CacheObservedDamage(string? targetKey, double amount)

@@ -236,6 +236,27 @@ def analyze(meta: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any
         kind = event["type"]
         amount = event["amount"]
         source = event["source"] or kind or "Unknown"
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+
+        # Resolved doom credit (schema 2): the mod split the kill proportionally across the doom
+        # appliers and stamped the result. It rides on the creature_died event (doom deals no
+        # attack damage), so handle it before the type dispatch and for any event that carries it.
+        doom_credit = metadata.get("doom_kill_credit", [])
+        if isinstance(doom_credit, list) and doom_credit:
+            for item in doom_credit:
+                if not isinstance(item, dict):
+                    continue
+                doom_player = str(item.get("player_name") or item.get("player_id") or "").strip()
+                credit = to_int(item.get("credit"))
+                if doom_player and credit > 0:
+                    totals.setdefault(doom_player, empty_stats())
+                    totals[doom_player].damage += credit
+                    totals[doom_player].direct_damage += credit
+                    totals[doom_player].sources["Doom"] += credit
+                    by_act[event["act"]][doom_player].damage += credit
+                    by_act[event["act"]][doom_player].direct_damage += credit
+                    act_totals[event["act"]]["damage"] += credit
+            continue
 
         if kind in {"damage", "damage_dealt"}:
             vulnerable_player = str(event.get("vulnerable_applied_by") or "").strip()
@@ -243,26 +264,6 @@ def analyze(meta: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any
                 vulnerable_player = vulnerable_by_target.get(event["target"], "")
 
             vulnerable_bonus = to_int(event.get("vulnerable_bonus"), amount - event["base_amount"])
-            metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
-
-            # Resolved doom credit (schema 2): the mod split the kill proportionally across the
-            # doom appliers. Credit them instead of the (unowned) doom damage event.
-            doom_credit = metadata.get("doom_kill_credit", [])
-            if isinstance(doom_credit, list) and doom_credit:
-                for item in doom_credit:
-                    if not isinstance(item, dict):
-                        continue
-                    doom_player = str(item.get("player_name") or item.get("player_id") or "").strip()
-                    credit = to_int(item.get("credit"))
-                    if doom_player and credit > 0:
-                        totals.setdefault(doom_player, empty_stats())
-                        totals[doom_player].damage += credit
-                        totals[doom_player].direct_damage += credit
-                        totals[doom_player].sources["Doom"] += credit
-                        by_act[event["act"]][doom_player].damage += credit
-                        by_act[event["act"]][doom_player].direct_damage += credit
-                        act_totals[event["act"]]["damage"] += credit
-                continue
 
             amplified_by = metadata.get("amplified_by", []) if isinstance(metadata.get("amplified_by", []), list) else []
             if amplified_by:

@@ -693,6 +693,26 @@
         const type = event.event_type;
         const amount = num(event.amount);
         const base = event.base_amount || amount;
+
+        // Resolved doom credit (schema 2): the mod split the kill across the doom appliers and
+        // stamped it onto the creature_died event (doom deals no attack damage). Consume it for
+        // any event that carries it, before the normal type dispatch.
+        const doomCredit = meta(event, "doom_kill_credit");
+        if (Array.isArray(doomCredit) && doomCredit.length) {
+          for (const item of doomCredit) {
+            if (!item || typeof item !== "object") continue;
+            const doomName = String(item.player_name || item.player_id || "").trim();
+            const credit = num(item.credit);
+            if (!doomName || credit <= 0) continue;
+            const doomKey = item.player_id ? `player:${item.player_id}` : doomName;
+            const helper = ensure(players, doomKey, doomName);
+            helper.damage += credit;
+            helper.doomDamage += credit;
+            addCounter(helper.sources, "Doom", credit);
+          }
+          continue;
+        }
+
         let actor = actorIdentity(event);
         if (!event.actor_player_id && playerKeyByName[actor.name.toLowerCase()]) {
           actor = { key: playerKeyByName[actor.name.toLowerCase()], name: actor.name };

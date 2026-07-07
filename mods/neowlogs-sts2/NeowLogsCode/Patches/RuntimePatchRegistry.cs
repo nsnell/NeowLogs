@@ -14,10 +14,11 @@ public static class RuntimePatchRegistry
         new("card_played", ["MegaCrit.Sts2.Core.Combat.History.CombatHistory"], ["CardPlayStarted"]),
         new("debuff_applied", ["MegaCrit.Sts2.Core.Commands.PowerCmd", "MegaCrit.Sts2.Core.Commands.ApplyPowerCommand", "MegaCrit.Sts2.Commands.PowerCmd", "MegaCrit.Sts2.Commands.ApplyPowerCommand"], ["Execute", "Run", "Process", "Apply"]),
         new("healing_done", ["MegaCrit.Sts2.Core.Commands.CreatureCmd"], ["Heal"]),
-        // Fix 1b: turn-boundary hook so timed ledgers expire on transitions, not only on hits.
-        new("turn_started", ["MegaCrit.Sts2.Core.Combat.History.CombatHistory"], ["TurnStarted", "PlayerTurnStarted", "RoundStarted", "PlayerTurnBegan"]),
-        // Fix 4.1a: death hook so doom/poison lethal blows are captured even when they deal 0 damage.
-        new("creature_died", ["MegaCrit.Sts2.Core.Combat.History.CombatHistory"], ["CreatureDied", "CreatureKilled", "Died", "OnCreatureDied", "CreatureDefeated"])
+        // Doom kills drop HP to 0 with no attack event, and CombatHistory has no death or turn
+        // methods (verified against sts2.dll: it only declares CardPlayStarted, CreatureAttacked,
+        // DamageReceived, BlockGained). The real doom-death signal is the Hook dispatcher
+        // AfterDiedToDoom(combatState, IReadOnlyList<Creature>); patch it to attribute the kill.
+        new("doom_died", ["MegaCrit.Sts2.Core.Hooks.Hook"], ["AfterDiedToDoom"])
     ];
 
     public static void Install(Harmony harmony)
